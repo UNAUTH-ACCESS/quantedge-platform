@@ -1,0 +1,1 @@
+-- Already applied manually in a prior session; placeholder to satisfy Prisma migration history
