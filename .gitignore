@@ -1,0 +1,15 @@
+.env
+.env.*
+node_modules/
+*.log
+solana-*devnet.json
+solana-deployer.json
+solana-delegate.json
+solana-mint.json
+dist/
+nginx/certbot/
+*.bak
+*.swp
+nginx/certbot/
+*.bak
+*.swp

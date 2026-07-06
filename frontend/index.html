@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>QuantEdge</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <script>
+    window.onerror = function(msg, src, line, col, err) {
+      document.getElementById("root").innerHTML = '<div style="background:#0A0A0F;color:#FF4D6D;padding:20px;font-family:monospace;font-size:11px;white-space:pre-wrap;word-break:break-all">' + msg + "\n\n" + (src||"") + ":" + line + "\n\n" + ((err&&err.stack)||"") + "</div>";
+    };
+    window.addEventListener("unhandledrejection", function(e) {
+      document.getElementById("root").innerHTML = '<div style="background:#0A0A0F;color:#FF4D6D;padding:20px;font-family:monospace;font-size:11px;white-space:pre-wrap;word-break:break-all">Unhandled rejection:\n\n' + ((e.reason&&e.reason.stack)||e.reason||"unknown") + "</div>";
+    });
+  </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

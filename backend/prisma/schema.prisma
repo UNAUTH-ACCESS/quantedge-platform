@@ -1,0 +1,905 @@
+// ── Prisma Schema — QuantEdge
+// Full data model. Every entity from the agreed design.
+// PostgreSQL target.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+}
+
+enum WorkspaceStatus {
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
+enum SubscriptionPlan {
+  FREE
+  PRO
+  INSTITUTIONAL
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  TRIALING
+}
+
+enum MembershipStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+}
+
+enum RoleName {
+  PLATFORM_ADMIN
+  ACCOUNT_ADMIN
+  TRADER
+  VIEWER
+}
+
+enum ChainType {
+  SOLANA
+  EVM
+  TRON
+}
+
+enum VenueType {
+  PERP
+  SPOT
+  AGGREGATOR
+}
+
+enum WalletProvider {
+  TRUST_WALLET
+  PHANTOM
+  METAMASK
+  TRONLINK
+  OTHER
+}
+
+enum WalletStatus {
+  CONNECTED
+  DISCONNECTED
+}
+
+enum PortfolioStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum StrategyStatus {
+  RESEARCH
+  VALIDATED
+  LIVE
+  ARCHIVED
+}
+
+enum SignalConfigStatus {
+  DRAFT
+  FROZEN
+  DEPRECATED
+}
+
+enum RegimeStateType {
+  QUIET_BULLISH
+  QUIET_BEARISH
+  STRESS
+  TRANSITIONING
+}
+
+enum SignalDirection {
+  LONG
+  SHORT
+}
+
+enum SignalStatus {
+  PENDING
+  ACTIVE
+  EXPIRED
+}
+
+enum EvaluationStatus {
+  PENDING
+  APPROVED
+  BLOCKED
+  SKIPPED
+}
+
+enum BlockReason {
+  DRAWDOWN_BREACH
+  POSITION_LIMIT
+  STRESS_CAP
+  BELOW_THRESHOLD
+  MANUAL
+  INSUFFICIENT_BALANCE
+}
+
+enum ProposalStatus {
+  PENDING
+  SIGNED
+  SUBMITTED
+  CONFIRMED
+  FAILED
+  CANCELLED
+}
+
+enum TransactionStatus {
+  SUBMITTED
+  CONFIRMED
+  FAILED
+}
+
+enum PositionSide {
+  LONG
+  SHORT
+  SPOT
+}
+
+enum PositionStatus {
+  OPEN
+  CLOSED
+  LIQUIDATED
+}
+
+enum SettlementStatus {
+  NOT_APPLICABLE
+  SETTLEMENT_PENDING
+  SETTLED
+  SETTLEMENT_FAILED
+}
+
+enum RiskEventType {
+  DRAWDOWN_BREACH
+  POSITION_LIMIT
+  STRESS_CAP
+  STOP_LOSS
+  LIQUIDATION
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  SIGN
+  CANCEL
+  APPROVE
+  REJECT
+  INVITE
+  SUSPEND
+  ACTIVATE
+}
+
+enum NotificationPriority {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum DeliveryChannel {
+  INAPP
+  WEBPUSH
+  EMAIL
+  WEBSOCKET
+}
+
+enum DeliveryStatus {
+  PENDING
+  DELIVERED
+  FAILED
+}
+
+enum NotificationType {
+  SIGNAL
+  REGIME
+  RISK
+  SYSTEM
+  TRADE
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLATFORM LAYER
+// ─────────────────────────────────────────────────────────────────────────────
+
+model PlatformAdmin {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id])
+  permissions String[] // ["manage_workspaces", "view_all", "suspend_workspace"]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("platform_admins")
+}
+
+model PlatformAuditEvent {
+  id              String   @id @default(uuid())
+  actorUserId     String
+  action          String
+  targetWorkspace String?
+  payload         Json?
+  ipAddress       String?
+  ts              DateTime @default(now())
+
+  @@index([actorUserId])
+  @@index([ts])
+  @@map("platform_audit_events")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IDENTITY & ACCESS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id           String        @id @default(uuid())
+  email        String        @unique
+  passwordHash String
+  name         String
+  avatar       String?
+  status       UserStatus    @default(ACTIVE)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  platformAdmin          PlatformAdmin?
+  memberships            Membership[]
+  ownedWorkspaces        Workspace[]    @relation("WorkspaceOwner")
+  notifications          Notification[]
+  auditEvents            AuditEvent[]   @relation("AuditActor")
+  refreshTokens          RefreshToken[]
+  notificationPreferences NotificationPreference[]
+  pushSubscriptions      PushSubscription[]
+
+  @@index([email])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([token])
+  @@map("refresh_tokens")
+}
+
+model Workspace {
+  id          String          @id @default(uuid())
+  name        String
+  slug        String          @unique
+  status      WorkspaceStatus @default(ACTIVE)
+  settings    Json            @default("{}")
+  ownerId     String
+  owner       User            @relation("WorkspaceOwner", fields: [ownerId], references: [id])
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  memberships             Membership[]
+  subscription            Subscription?
+  portfolios              Portfolio[]
+  wallets                 Wallet[]
+  strategies              Strategy[]
+  auditEvents             AuditEvent[]
+  notifications           Notification[]
+  notificationPreferences NotificationPreference[]
+  pushSubscriptions       PushSubscription[]
+  deposits                Deposit[]
+
+  @@index([slug])
+  @@map("workspaces")
+}
+
+model Membership {
+  id          String           @id @default(uuid())
+  workspaceId String
+  workspace   Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleId      String
+  role        Role             @relation(fields: [roleId], references: [id])
+  status      MembershipStatus @default(INVITED)
+  joinedAt    DateTime?
+  createdAt   DateTime         @default(now())
+
+  @@unique([workspaceId, userId])
+  @@index([workspaceId])
+  @@index([userId])
+  @@map("memberships")
+}
+
+model Role {
+  id          String      @id @default(uuid())
+  workspaceId String?     // null = platform role
+  name        RoleName
+  permissions String[]
+  createdAt   DateTime    @default(now())
+
+  memberships Membership[]
+
+  @@unique([name])
+  @@map("roles")
+}
+
+model Subscription {
+  id              String             @id @default(uuid())
+  workspaceId     String             @unique
+  workspace       Workspace          @relation(fields: [workspaceId], references: [id])
+  plan            SubscriptionPlan   @default(FREE)
+  status          SubscriptionStatus @default(TRIALING)
+  billingCycle    String             @default("monthly")
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  limits          Json               @default("{}")
+  externalId      String?            // Stripe subscription ID (placeholder)
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@map("subscriptions")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REFERENCE DATA
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Asset {
+  id              String   @id @default(uuid())
+  symbol          String   @unique
+  name            String
+  coingeckoId     String?
+  chainId         String?
+  contractAddress String?
+  decimals        Int      @default(18)
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+
+  signals   Signal[]
+  fills     Fill[]
+  positions Position[]
+
+  @@index([symbol])
+  @@map("assets")
+}
+
+model Chain {
+  id            String    @id @default(uuid())
+  name          String    @unique
+  type          ChainType
+  networkId     String?
+  rpcUrl        String?
+  explorerUrl   String?
+  nativeSymbol  String
+  active        Boolean   @default(true)
+
+  wallets      Wallet[]
+  venues       Venue[]
+  transactions Transaction[]
+  positions    Position[]
+
+  @@map("chains")
+}
+
+model Venue {
+  id            String    @id @default(uuid())
+  name          String    @unique
+  chainId       String
+  chain         Chain     @relation(fields: [chainId], references: [id])
+  type          VenueType
+  feeBps        Float     @default(2.5)
+  makerRebateBps Float    @default(0)
+  active        Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+
+  proposals TradeProposal[]
+  fills     Fill[]
+  positions Position[]
+
+  @@map("venues")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WALLETS & PORTFOLIOS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Deposit {
+  id             String    @id @default(uuid())
+  workspaceId    String
+  workspace      Workspace @relation(fields: [workspaceId], references: [id])
+  userId         String
+  walletId       String
+  wallet         Wallet    @relation(fields: [walletId], references: [id])
+  chain          String    @default("SPL")
+  depositTxHash  String?
+  depositAmount  Float
+  vaultAddress   String
+  sweepTxHash    String?
+  status         String    @default("DETECTED")
+  allocations    Json?
+  errorMessage   String?
+  createdAt      DateTime  @default(now())
+  completedAt    DateTime?
+
+  @@index([workspaceId])
+  @@index([walletId])
+  @@index([status])
+  @@map("deposits")
+}
+
+model Wallet {
+  id          String        @id @default(uuid())
+  workspaceId String
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id])
+  userId      String
+  label       String
+  address     String
+  chainId     String
+  chain       Chain         @relation(fields: [chainId], references: [id])
+  provider    WalletProvider
+  status      WalletStatus  @default(CONNECTED)
+  verifiedAt  DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  portfolioWallets PortfolioWallet[]
+  proposals        TradeProposal[]
+  deposits         Deposit[]
+
+  delegateApproved    Boolean   @default(false)
+  approvedCap         Float?
+  remainingAllowance  Float?
+  linkTxHash          String?
+  tokenAccountAddress String?
+  delegateChain       String?
+  lastCheckedAt       DateTime?
+
+  @@unique([workspaceId, address, chainId])
+  @@index([workspaceId])
+  @@index([delegateApproved])
+  @@map("wallets")
+}
+
+model Portfolio {
+  id           String          @id @default(uuid())
+  workspaceId  String
+  workspace    Workspace       @relation(fields: [workspaceId], references: [id])
+  name         String
+  baseCurrency String          @default("USDT")
+  status       PortfolioStatus @default(ACTIVE)
+  inceptionAt  DateTime        @default(now())
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  wallets       PortfolioWallet[]
+  snapshots     PortfolioSnapshot[]
+  riskConfig    RiskConfig?
+  riskEvents    RiskEvent[]
+  proposals     TradeProposal[]
+  positions     Position[]
+  evaluations   PortfolioSignalEvaluation[]
+  signalConfigs PortfolioSignalConfig[]
+
+  @@index([workspaceId])
+  @@map("portfolios")
+}
+
+model PortfolioWallet {
+  portfolioId String
+  portfolio   Portfolio @relation(fields: [portfolioId], references: [id])
+  walletId    String
+  wallet      Wallet    @relation(fields: [walletId], references: [id])
+  addedAt     DateTime  @default(now())
+
+  @@id([portfolioId, walletId])
+  @@map("portfolio_wallets")
+}
+
+model PortfolioSnapshot {
+  id             String    @id @default(uuid())
+  portfolioId    String
+  portfolio      Portfolio @relation(fields: [portfolioId], references: [id])
+  nav            Float
+  cash           Float     @default(0)
+  invested       Float     @default(0)
+  unrealizedPnl  Float     @default(0)
+  realizedPnl    Float     @default(0)
+  snappedAt      DateTime  @default(now())
+
+  @@index([portfolioId, snappedAt])
+  @@map("portfolio_snapshots")
+}
+
+model RiskConfig {
+  id                    String    @id @default(uuid())
+  portfolioId           String    @unique
+  portfolio             Portfolio @relation(fields: [portfolioId], references: [id])
+  maxPositionPct        Float     @default(15)
+  stopLossPct           Float     @default(5)
+  kellyFraction         Float     @default(0.25)
+  maxDrawdownPct        Float     @default(20)
+  stressExposureCapPct  Float     @default(50)
+  signalStrengthThreshold Float   @default(0.5)
+  updatedAt             DateTime  @updatedAt
+
+  @@map("risk_configs")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RESEARCH LAYER
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Strategy {
+  id          String         @id @default(uuid())
+  workspaceId String
+  workspace   Workspace      @relation(fields: [workspaceId], references: [id])
+  name        String
+  description String?
+  status      StrategyStatus @default(RESEARCH)
+  createdById String
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  signalConfigs SignalConfig[]
+
+  @@index([workspaceId])
+  @@map("strategies")
+}
+
+model SignalConfig {
+  id            String            @id @default(uuid())
+  strategyId    String
+  strategy      Strategy          @relation(fields: [strategyId], references: [id])
+  version       Int               @default(1)
+  featureSet    Json              // [{name, lag, weight}]
+  thresholds    Json              // {strength_min, kelly_max}
+  kellyFraction Float             @default(0.25)
+  barFrequency  String            @default("2-bar-30m")
+  status        SignalConfigStatus @default(DRAFT)
+  frozenAt      DateTime?
+  frozenById    String?
+  createdAt     DateTime          @default(now())
+
+  signals              Signal[]
+  regimeStates         RegimeState[]
+  portfolioSignalConfigs PortfolioSignalConfig[]
+
+  @@unique([strategyId, version])
+  @@map("signal_configs")
+}
+
+// Which portfolios are running which SignalConfig
+model PortfolioSignalConfig {
+  portfolioId    String
+  portfolio      Portfolio    @relation(fields: [portfolioId], references: [id])
+  signalConfigId String
+  signalConfig   SignalConfig @relation(fields: [signalConfigId], references: [id])
+  enabledAt      DateTime     @default(now())
+  disabledAt     DateTime?
+  active         Boolean      @default(true)
+
+  @@id([portfolioId, signalConfigId])
+  @@map("portfolio_signal_configs")
+}
+
+model RegimeState {
+  id              String          @id @default(uuid())
+  signalConfigId  String
+  signalConfig    SignalConfig     @relation(fields: [signalConfigId], references: [id])
+  state           RegimeStateType
+  confidence      Float
+  hmmState        Int
+  btcStressIndex  Float
+  transitionProb  Float           @default(0)
+  validFrom       DateTime
+  validTo         DateTime?       // null = currently active
+  createdAt       DateTime        @default(now())
+
+  @@index([signalConfigId, validFrom])
+  @@map("regime_states")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SIGNAL & EXECUTION
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Signal {
+  id             String        @id @default(uuid())
+  signalConfigId String
+  signalConfig   SignalConfig  @relation(fields: [signalConfigId], references: [id])
+  assetId        String
+  asset          Asset         @relation(fields: [assetId], references: [id])
+  direction      SignalDirection
+  strength       Float
+  featuresSnapshot Json        // {feature: value} at generation time
+  kellySize      Float
+  regimeStateId  String?       // regime active when signal fired
+  status         SignalStatus  @default(PENDING)
+  expiresAt      DateTime
+  generatedAt    DateTime      @default(now())
+  barCloseAt     DateTime?     // deterministic UTC bar-close this signal belongs to
+
+  evaluations PortfolioSignalEvaluation[]
+
+  @@index([signalConfigId, generatedAt])
+  @@index([status, expiresAt])
+  @@unique([signalConfigId, barCloseAt])
+  @@map("signals")
+}
+
+model PortfolioSignalEvaluation {
+  id               String           @id @default(uuid())
+  signalId         String
+  signal           Signal           @relation(fields: [signalId], references: [id])
+  portfolioId      String
+  portfolio        Portfolio        @relation(fields: [portfolioId], references: [id])
+  evaluationStatus EvaluationStatus @default(PENDING)
+  blockReason      BlockReason?
+  kellySizeApplied Float?
+  notionalApplied  Float?
+  tradeProposalId  String?          @unique
+  tradeProposal    TradeProposal?   @relation(fields: [tradeProposalId], references: [id])
+  evaluatedAt      DateTime         @default(now())
+
+  @@unique([signalId, portfolioId])
+  @@index([portfolioId, evaluatedAt])
+  @@map("portfolio_signal_evaluations")
+}
+
+model TradeProposal {
+  id            String        @id @default(uuid())
+  signalId      String
+  portfolioId   String
+  portfolio     Portfolio     @relation(fields: [portfolioId], references: [id])
+  walletId      String
+  wallet        Wallet        @relation(fields: [walletId], references: [id])
+  venueId       String
+  venue         Venue         @relation(fields: [venueId], references: [id])
+  assetId       String
+  direction     SignalDirection
+  notional      Float
+  estEntry      Float
+  estFeeBps     Float
+  estSlippageBps Float        @default(0)
+  status        ProposalStatus @default(PENDING)
+  proposedAt    DateTime      @default(now())
+  signedAt      DateTime?
+  submittedAt   DateTime?
+  confirmedAt   DateTime?
+  cancelledAt   DateTime?
+  failureReason String?
+
+  evaluation  PortfolioSignalEvaluation?
+  transaction Transaction?
+  fill        Fill?
+
+  @@index([portfolioId, status])
+  @@index([signalId])
+  @@map("trade_proposals")
+}
+
+model Transaction {
+  id              String            @id @default(uuid())
+  tradeProposalId String            @unique
+  tradeProposal   TradeProposal     @relation(fields: [tradeProposalId], references: [id])
+  chainId         String
+  chain           Chain             @relation(fields: [chainId], references: [id])
+  txHash          String            @unique
+  blockNumber     BigInt?
+  gasUsed         BigInt?
+  status          TransactionStatus @default(SUBMITTED)
+  submittedAt     DateTime          @default(now())
+  confirmedAt     DateTime?
+
+  @@index([txHash])
+  @@map("transactions")
+}
+
+model Fill {
+  id              String    @id @default(uuid())
+  tradeProposalId String    @unique
+  tradeProposal   TradeProposal @relation(fields: [tradeProposalId], references: [id])
+  assetId         String
+  asset           Asset     @relation(fields: [assetId], references: [id])
+  venueId         String
+  venue           Venue     @relation(fields: [venueId], references: [id])
+  direction       SignalDirection
+  fillPrice       Float
+  fillSize        Float
+  feePaid         Float
+  feeAsset        String    @default("USDT")
+  filledAt        DateTime  @default(now())
+
+  position Position?
+
+  @@map("fills")
+}
+
+model Position {
+  id           String        @id @default(uuid())
+  portfolioId  String
+  portfolio    Portfolio     @relation(fields: [portfolioId], references: [id])
+  assetId      String
+  asset        Asset         @relation(fields: [assetId], references: [id])
+  venueId      String
+  venue        Venue         @relation(fields: [venueId], references: [id])
+  chainId      String
+  chain        Chain         @relation(fields: [chainId], references: [id])
+  fillId       String        @unique
+  fill         Fill          @relation(fields: [fillId], references: [id])
+  side         PositionSide
+  size         Float
+  entryPrice   Float
+  currentPrice Float
+  realizedPnl  Float         @default(0)
+  unrealizedPnl Float        @default(0)
+  status       PositionStatus @default(OPEN)
+  settlementStatus    SettlementStatus @default(NOT_APPLICABLE)
+  settlementAttempts  Int              @default(0)
+  settlementTxHash    String?
+  settlementError     String?
+  lastSettlementAt    DateTime?
+  openedAt     DateTime      @default(now())
+  closedAt     DateTime?
+
+  @@index([portfolioId, status])
+  @@map("positions")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RISK
+// ─────────────────────────────────────────────────────────────────────────────
+
+model RiskEvent {
+  id          String        @id @default(uuid())
+  portfolioId String
+  portfolio   Portfolio     @relation(fields: [portfolioId], references: [id])
+  positionId  String?
+  type        RiskEventType
+  value       Float
+  threshold   Float
+  actionTaken String?
+  triggeredAt DateTime      @default(now())
+
+  @@index([portfolioId, triggeredAt])
+  @@map("risk_events")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ── Marketing ────────────────────────────────────────────────────────────────
+
+enum SubscriberStatus {
+  SUBSCRIBED
+  UNSUBSCRIBED
+}
+
+model Subscriber {
+  id               String           @id @default(uuid())
+  email            String           @unique
+  name             String?
+  source           String           @default("website")
+  status           SubscriberStatus @default(SUBSCRIBED)
+  unsubscribeToken String           @unique @default(uuid())
+  subscribedAt     DateTime         @default(now())
+  unsubscribedAt   DateTime?
+  metadata         Json             @default("{}")
+
+  @@index([status])
+  @@index([email])
+  @@map("subscribers")
+}
+
+// OBSERVABILITY
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AuditEvent {
+  id          String      @id @default(uuid())
+  workspaceId String
+  workspace   Workspace   @relation(fields: [workspaceId], references: [id])
+  actorId     String
+  actor       User        @relation("AuditActor", fields: [actorId], references: [id])
+  entityType  String
+  entityId    String
+  action      AuditAction
+  beforeState Json?
+  afterState  Json?
+  ipAddress   String?
+  ts          DateTime    @default(now())
+
+  @@index([workspaceId, ts])
+  @@index([entityType, entityId])
+  @@map("audit_events")
+}
+
+model Notification {
+  id          String               @id @default(uuid())
+  workspaceId String
+  workspace   Workspace            @relation(fields: [workspaceId], references: [id])
+  userId      String
+  user        User                 @relation(fields: [userId], references: [id])
+  type        NotificationType
+  priority    NotificationPriority @default(MEDIUM)
+  title       String
+  body        String
+  entityId    String?
+  entityType  String?
+  read        Boolean              @default(false)
+  deliveredAt DateTime?
+  createdAt   DateTime             @default(now())
+
+  deliveries  NotificationDelivery[]
+
+  @@index([userId, read])
+  @@index([workspaceId, createdAt])
+  @@index([userId, type])
+  @@map("notifications")
+}
+
+model NotificationDelivery {
+  id             String         @id @default(uuid())
+  notificationId String
+  notification   Notification   @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  channel        DeliveryChannel
+  status         DeliveryStatus @default(PENDING)
+  attempts       Int            @default(0)
+  nextRetryAt    DateTime?
+  lastError      String?
+  deliveredAt    DateTime?
+  createdAt      DateTime       @default(now())
+
+  @@unique([notificationId, channel])
+  @@index([status, nextRetryAt])
+  @@map("notification_deliveries")
+}
+
+model NotificationPreference {
+  id          String          @id @default(uuid())
+  userId      String
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspaceId String
+  workspace   Workspace       @relation(fields: [workspaceId], references: [id])
+  channel     DeliveryChannel
+  eventType   String          @default("ALL")
+  enabled     Boolean         @default(true)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@unique([userId, workspaceId, channel, eventType])
+  @@index([userId, workspaceId])
+  @@map("notification_preferences")
+}
+
+model PushSubscription {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  endpoint    String   @unique
+  p256dh      String
+  auth        String
+  userAgent   String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
+  @@map("push_subscriptions")
+}
