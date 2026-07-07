@@ -10,6 +10,10 @@
 
 require("dotenv").config();
 
+// Validates all shared/critical config at boot — fails fast with a clear,
+// consolidated report if anything required is missing or malformed. See H2.
+const config = require("../lib/config");
+
 const prisma                    = require("../lib/prisma");
 const logger                    = require("../lib/logger");
 const BybitFeed                 = require("./feeds/bybit.feed");

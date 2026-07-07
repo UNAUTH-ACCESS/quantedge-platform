@@ -17,8 +17,8 @@
 const { Client } = require("pg");
 const prisma  = require("../lib/prisma");
 const logger  = require("../lib/logger");
+const config  = require("../lib/config");
 
-const DELEGATE_URL = process.env.DELEGATE_SERVER_URL || "http://172.19.0.7:3001";
 const SOLANA_DEPOSIT_VAULT = process.env.SOLANA_DEPOSIT_VAULT;
 
 // Minimum USDC balance worth acting on — avoids dust-triggered cycles
@@ -37,9 +37,12 @@ async function pgNotify(channel, payload) {
 }
 
 async function delegatePost(endpoint, body) {
-  const res = await fetch(`${DELEGATE_URL}${endpoint}`, {
+  const res = await fetch(`${config.DELEGATE_SERVER_URL}${endpoint}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "x-delegate-secret": config.DELEGATE_SHARED_SECRET,
+    },
     body: JSON.stringify(body)
   });
   const data = await res.json();

@@ -5,6 +5,11 @@ const cors = require("cors");
 const helmet = require("helmet");
 const morgan = require("morgan");
 
+// Validates all shared/critical config at boot — fails fast with a clear,
+// consolidated report if anything required is missing or malformed. See H2.
+const config = require("./lib/config");
+config.assertApiConfig(); // this process also needs JWT + CORS validated
+
 const logger = require("./lib/logger");
 const { initSocket } = require("./lib/socket");
 const prisma = require("./lib/prisma");

@@ -57,20 +57,22 @@ router.delete("/:id", authenticate, async (req, res, next) => {
 module.exports = router;
 
 const http = require("http");
+const config = require("../../../lib/config");
+const DELEGATE_URL = new URL(config.DELEGATE_SERVER_URL);
 
 function delegatePost(path, body) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body);
     const req = http.request({
-      host: new URL(process.env.DELEGATE_SERVER_URL || "http://172.19.0.1:3001").hostname,
-      port: new URL(process.env.DELEGATE_SERVER_URL || "http://172.19.0.1:3001").port,
+      host: DELEGATE_URL.hostname,
+      port: DELEGATE_URL.port,
       path,
       method: "POST",
       timeout: 10000,
       headers: {
         "Content-Type": "application/json",
         "Content-Length": Buffer.byteLength(data),
-        "x-delegate-secret": process.env.DELEGATE_SHARED_SECRET || "",
+        "x-delegate-secret": config.DELEGATE_SHARED_SECRET,
       },
     }, res => {
       let d = "";
