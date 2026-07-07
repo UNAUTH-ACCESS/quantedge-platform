@@ -1,6 +1,6 @@
 const express = require("express");
 const prisma   = require("../../../lib/prisma");
-const { authenticate, requirePermission } = require("../../../middleware/auth");
+const { authenticate, requirePermission, requireWorkspace } = require("../../../middleware/auth");
 const { AppError }     = require("../../../middleware/error");
 const { getUserPreferences, setPreference } = require("../../../notifications/preferences");
 
@@ -75,20 +75,16 @@ router.patch("/read-all", authenticate, async (req, res, next) => {
 });
 
 // GET /notifications/preferences
-router.get("/preferences", authenticate, async (req, res, next) => {
+router.get("/preferences", authenticate, requireWorkspace, async (req, res, next) => {
   try {
-    const workspaceId = req.headers["x-workspace-id"];
-    if (!workspaceId) throw new AppError("x-workspace-id required", 400, "BAD_REQUEST");
-    const prefs = await getUserPreferences(req.user.id, workspaceId);
+    const prefs = await getUserPreferences(req.user.id, req.workspace.id);
     res.json({ success: true, data: prefs });
   } catch (err) { next(err); }
 });
 
 // PUT /notifications/preferences
-router.put("/preferences", authenticate, requirePermission("view_all"), async (req, res, next) => {
+router.put("/preferences", authenticate, requireWorkspace, requirePermission("view_all"), async (req, res, next) => {
   try {
-    const workspaceId = req.headers["x-workspace-id"];
-    if (!workspaceId) throw new AppError("x-workspace-id required", 400, "BAD_REQUEST");
     const { channel, eventType = "ALL", enabled } = req.body;
     if (!channel || typeof enabled !== "boolean") {
       throw new AppError("channel and enabled required", 400, "BAD_REQUEST");
@@ -96,7 +92,7 @@ router.put("/preferences", authenticate, requirePermission("view_all"), async (r
     // INAPP cannot be disabled
     if (channel === "INAPP") throw new AppError("INAPP channel cannot be disabled", 400, "BAD_REQUEST");
 
-    const pref = await setPreference(req.user.id, workspaceId, channel, eventType, enabled);
+    const pref = await setPreference(req.user.id, req.workspace.id, channel, eventType, enabled);
     res.json({ success: true, data: pref });
   } catch (err) { next(err); }
 });
