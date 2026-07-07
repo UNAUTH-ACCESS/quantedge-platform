@@ -9,20 +9,18 @@
 const webpush = require("web-push");
 const prisma  = require("../../lib/prisma");
 const logger  = require("../../lib/logger");
+const config  = require("../../lib/config");
 
 // Configure VAPID on first use
 let vapidConfigured = false;
 function ensureVapid() {
   if (vapidConfigured) return;
-  const publicKey  = process.env.VAPID_PUBLIC_KEY;
-  const privateKey = process.env.VAPID_PRIVATE_KEY;
-  const subject    = process.env.VAPID_SUBJECT || "mailto:admin@quantedge.io";
 
-  if (!publicKey || !privateKey) {
+  if (!config.VAPID_PUBLIC_KEY || !config.VAPID_PRIVATE_KEY) {
     throw new Error("VAPID keys not configured. Run: node scripts/generate-vapid.js");
   }
 
-  webpush.setVapidDetails(subject, publicKey, privateKey);
+  webpush.setVapidDetails(config.VAPID_SUBJECT, config.VAPID_PUBLIC_KEY, config.VAPID_PRIVATE_KEY);
   vapidConfigured = true;
 }
 

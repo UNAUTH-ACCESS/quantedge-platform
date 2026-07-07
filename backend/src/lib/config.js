@@ -37,6 +37,9 @@ const config = {
   APP_URL: optionalVar("APP_URL", "https://quantedge.exchange"),
   RESEND_API_KEY: optionalVar("RESEND_API_KEY", null),
   FROM_EMAIL: optionalVar("FROM_EMAIL", "QuantEdge <onboarding@resend.dev>"),
+  VAPID_PUBLIC_KEY: optionalVar("VAPID_PUBLIC_KEY", null),
+  VAPID_PRIVATE_KEY: optionalVar("VAPID_PRIVATE_KEY", null),
+  VAPID_SUBJECT: optionalVar("VAPID_SUBJECT", "mailto:notifications@quantedge.exchange"),
 };
 
 function reportAndExitIfErrors() {

@@ -8,6 +8,7 @@ import { ErrorState, LoadingState } from "../../components/system/SystemStatus";
 import { usePermissions } from "../../hooks/usePermissions";
 import { colors, regime as regimeMeta } from "../../lib/tokens";
 import { fmt } from "../../lib/format";
+import { registerPush, unregisterPush } from "../../lib/push";
 
 function Section({ title, children }) {
   return (
@@ -115,6 +116,86 @@ function AutoExecuteToggle({ portfolioId }) {
   );
 }
 
+function PushNotificationsToggle() {
+  const [enabled, setEnabled]   = useState(false);
+  const [loading, setLoading]   = useState(true);
+  const [saving,  setSaving]    = useState(false);
+  const [error,   setError]     = useState(null);
+  const [supported, setSupported] = useState(true);
+  const workspaceId = useAuthStore(s => s.activeWorkspace?.id);
+
+  useEffect(() => {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+      setSupported(false);
+      setLoading(false);
+      return;
+    }
+    navigator.serviceWorker.getRegistration("/service-worker.js")
+      .then(reg => reg?.pushManager.getSubscription())
+      .then(sub => setEnabled(!!sub))
+      .catch(() => setEnabled(false))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const toggle = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      if (enabled) {
+        await unregisterPush(workspaceId);
+        setEnabled(false);
+      } else {
+        const ok = await registerPush(workspaceId);
+        if (!ok) throw new Error("Permission denied, or push isn't supported in this browser");
+        setEnabled(true);
+      }
+    } catch (err) {
+      setError(err.message || "Failed to update");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: colors.muted }}>Loading…</div>;
+
+  if (!supported) {
+    return (
+      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: colors.muted }}>
+        Push notifications aren't supported in this browser. Try Chrome or Safari (not an in-app browser like Phantom or MetaMask).
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0" }}>
+        <div>
+          <div style={{ fontSize: 11, color: colors.muted, marginBottom: 3 }}>Push Notifications</div>
+          <div style={{ fontSize: 10, color: colors.muted, opacity: 0.7, maxWidth: 240 }}>
+            Get alerts for signals, fills, and risk events even when the app isn't open.
+          </div>
+        </div>
+        <button onClick={toggle} disabled={saving} style={{
+          width: 48, height: 26, borderRadius: 13,
+          background: enabled ? colors.green : colors.border2,
+          border: "none", cursor: saving ? "not-allowed" : "pointer",
+          position: "relative", transition: "background 0.2s", flexShrink: 0,
+        }}>
+          <div style={{
+            width: 20, height: 20, borderRadius: "50%",
+            background: "white",
+            position: "absolute", top: 3,
+            left: enabled ? 24 : 4,
+            transition: "left 0.2s",
+            boxShadow: "0 1px 3px #00000040",
+          }}/>
+        </button>
+      </div>
+      {error && <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: colors.red }}>{error}</div>}
+    </div>
+  );
+}
+
 export default function Settings() {
   const { user, activeWorkspace } = useAuthStore();
   const { canManagePortfolios, isAccountAdmin } = usePermissions();
@@ -213,6 +294,10 @@ export default function Settings() {
               </span>
             </div>
           ))}
+        </Section>
+
+        <Section title="Notifications">
+          <PushNotificationsToggle/>
         </Section>
 
         <Section title="System">
