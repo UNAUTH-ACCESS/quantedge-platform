@@ -1,22 +1,18 @@
 const express = require("express");
 const prisma = require("../../../lib/prisma");
-const { authenticate } = require("../../../middleware/auth");
+const { authenticate, requireWorkspace } = require("../../../middleware/auth");
+const { assertSignalAccess, getUserPortfolioIds } = require("../../../middleware/ownership");
 const { AppError } = require("../../../middleware/error");
 
 const router = express.Router();
 
 // GET /signals — all signals for workspace (via portfolio membership)
-router.get("/", authenticate, async (req, res, next) => {
+router.get("/", authenticate, requireWorkspace, async (req, res, next) => {
   try {
     const { status, limit = 50, offset = 0 } = req.query;
 
-    // Get workspace from header
-    const workspaceId = req.headers["x-workspace-id"];
-    if (!workspaceId) throw new AppError("x-workspace-id header required", 400, "BAD_REQUEST");
-
-    // Get signal configs active in this workspace's portfolios
     const portfolios = await prisma.portfolio.findMany({
-      where: { workspaceId },
+      where: { workspaceId: req.workspace.id },
       select: { id: true },
     });
     const portfolioIds = portfolios.map(p => p.id);
@@ -49,11 +45,12 @@ router.get("/", authenticate, async (req, res, next) => {
 // GET /signals/:id
 router.get("/:id", authenticate, async (req, res, next) => {
   try {
+    await assertSignalAccess(req.params.id, req.user.id);
+
     const signal = await prisma.signal.findUnique({
       where: { id: req.params.id },
       include: { asset: true, signalConfig: { include: { strategy: true } }, evaluations: { include: { tradeProposal: true } } },
     });
-    if (!signal) throw new AppError("Signal not found", 404, "NOT_FOUND");
     res.json({ success: true, data: signal });
   } catch (err) { next(err); }
 });
@@ -61,8 +58,15 @@ router.get("/:id", authenticate, async (req, res, next) => {
 // GET /signals/:id/evaluations
 router.get("/:id/evaluations", authenticate, async (req, res, next) => {
   try {
+    await assertSignalAccess(req.params.id, req.user.id);
+
+    // Scope to only the requesting user's own portfolios — otherwise this
+    // leaked every other workspace's evaluations for the same signal,
+    // including their trade sizing and wallet details.
+    const portfolioIds = await getUserPortfolioIds(req.user.id);
+
     const evaluations = await prisma.portfolioSignalEvaluation.findMany({
-      where: { signalId: req.params.id },
+      where: { signalId: req.params.id, portfolioId: { in: portfolioIds } },
       include: { portfolio: true, tradeProposal: { include: { venue: true, wallet: true } } },
       orderBy: { evaluatedAt: "desc" },
     });
@@ -71,10 +75,9 @@ router.get("/:id/evaluations", authenticate, async (req, res, next) => {
 });
 
 // GET /signals/regime/current — current regime state
-router.get("/regime/current", authenticate, async (req, res, next) => {
+router.get("/regime/current", authenticate, requireWorkspace, async (req, res, next) => {
   try {
-    const workspaceId = req.headers["x-workspace-id"];
-    const portfolios = await prisma.portfolio.findMany({ where: { workspaceId }, select: { id: true } });
+    const portfolios = await prisma.portfolio.findMany({ where: { workspaceId: req.workspace.id }, select: { id: true } });
     const portfolioIds = portfolios.map(p => p.id);
     const psc = await prisma.portfolioSignalConfig.findFirst({ where: { portfolioId: { in: portfolioIds }, active: true } });
     if (!psc) throw new AppError("No active signal config", 404, "NOT_FOUND");

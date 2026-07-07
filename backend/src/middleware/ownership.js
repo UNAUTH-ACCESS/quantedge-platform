@@ -71,10 +71,40 @@ async function assertWalletAccess(walletId, userId, opts = {}) {
   return wallet;
 }
 
+// Signal is not owned by a single workspace — one signal can be evaluated
+// independently by many portfolios across many workspaces. Access is
+// granted if the user belongs to ANY workspace that has an evaluation for
+// this signal (i.e., it was relevant to at least one of their portfolios).
+async function assertSignalAccess(signalId, userId) {
+  const signal = await prisma.signal.findUnique({ where: { id: signalId } });
+  if (!signal) throw new AppError("Not found", 404, "NOT_FOUND");
+
+  const evaluation = await prisma.portfolioSignalEvaluation.findFirst({
+    where: {
+      signalId,
+      portfolio: { workspace: { memberships: { some: { userId, status: "ACTIVE" } } } },
+    },
+  });
+  if (!evaluation) throw new AppError("Not found", 404, "NOT_FOUND");
+  return signal;
+}
+
+// Returns the set of portfolio IDs the user can legitimately see, for
+// scoping queries that join through portfolio (e.g. filtering evaluations).
+async function getUserPortfolioIds(userId) {
+  const portfolios = await prisma.portfolio.findMany({
+    where: { workspace: { memberships: { some: { userId, status: "ACTIVE" } } } },
+    select: { id: true },
+  });
+  return portfolios.map(p => p.id);
+}
+
 module.exports = {
   assertWorkspaceMembership,
   assertPortfolioAccess,
   assertPositionAccess,
   assertProposalAccess,
   assertWalletAccess,
+  assertSignalAccess,
+  getUserPortfolioIds,
 };
