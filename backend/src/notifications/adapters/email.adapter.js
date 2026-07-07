@@ -3,13 +3,14 @@
  *
  * Sends transactional emails for HIGH and CRITICAL notifications.
  * Plain structured text, no heavy HTML.
- * Uses Resend sandbox sender: onboarding@resend.dev
+ * Sender configured via FROM_EMAIL env var, verified domain required in Resend.
  */
 
 const logger = require("../../lib/logger");
 
 const RESEND_API_URL = "https://api.resend.com/emails";
-const FROM_ADDRESS   = "QuantEdge <onboarding@resend.dev>";
+const FROM_ADDRESS   = process.env.FROM_EMAIL || "QuantEdge <onboarding@resend.dev>";
+const APP_URL        = `https://${process.env.DOMAIN || "quantedge.exchange"}`;
 
 async function deliver(notification, userEmail) {
   const apiKey = process.env.RESEND_API_KEY;
@@ -84,7 +85,7 @@ function buildEmail(notification) {
     </div>
 
     ${deepLink ? `
-    <a href="https://quantedge-live.duckdns.org${deepLink}"
+    <a href="${APP_URL}${deepLink}"
        style="display:inline-block;background:#00D4AA;color:#0A0A0F;padding:10px 20px;
               border-radius:4px;font-size:12px;font-weight:700;text-decoration:none;
               letter-spacing:0.04em;">
@@ -95,7 +96,7 @@ function buildEmail(notification) {
     <div style="margin-top:32px;padding-top:16px;border-top:1px solid #1E1E2E;
                 font-size:10px;color:#5A6478;">
       You are receiving this because you have email notifications enabled for your workspace.
-      Manage preferences at quantedge-live.duckdns.org/settings
+      Manage preferences at ${APP_URL.replace("https://", "")}/settings
     </div>
   </div>
 </body>

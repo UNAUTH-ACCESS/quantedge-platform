@@ -17,7 +17,7 @@ const logger = require("../lib/logger");
 
 const RESEND_API_URL = "https://api.resend.com/emails";
 const FROM_ADDRESS   = "QuantEdge <onboarding@resend.dev>";
-const APP_URL        = process.env.APP_URL || "https://quantedge-live.duckdns.org";
+const APP_URL        = process.env.APP_URL || "https://quantedge.exchange";
 
 // ── Triggers ──────────────────────────────────────────────────────────────────
 
