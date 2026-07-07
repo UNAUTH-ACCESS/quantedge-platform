@@ -248,34 +248,82 @@ async function signAndExecute(proposalId) {
  *
  * Called by exit.service.js after position closes.
  */
-async function settlePosition(position, realizedPnl) {
-  const MAX_ATTEMPTS = 3;
-  const BACKOFF_MS = [1000, 3000, 9000];
-
+// Resolves the chain/vault/return-amount context needed to settle a
+// position. Returns null if there's nothing to settle on-chain (no
+// delegate wallet, unsupported chain) — caller should mark NOT_APPLICABLE.
+async function resolveSettlementContext(position) {
   const proposal = await prisma.tradeProposal.findFirst({
     where:   { id: position.fill?.tradeProposalId },
     include: { wallet: true }
   });
 
-  if (!proposal?.wallet?.delegateApproved) {
-    // No delegate wallet — nothing to settle on-chain
-    await prisma.position.update({
-      where: { id: position.id },
-      data:  { settlementStatus: "NOT_APPLICABLE" },
-    });
-    return;
-  }
+  if (!proposal?.wallet?.delegateApproved) return null;
 
   const chainKey = proposal.wallet.delegateChain ||
     PROVIDER_CHAIN_MAP[proposal.wallet.provider];
 
-  if (!chainKey || !VAULT[chainKey]) {
+  if (!chainKey || !VAULT[chainKey]) return null;
+
+  return { proposal, chainKey };
+}
+
+// Performs exactly ONE on-chain settlement attempt — no retry loop, no
+// backoff. Reused by both the fast in-process retry path (settlePosition)
+// and the durable reconciliation job (settlementReconciliation.job.js),
+// so the actual chain-call logic exists in exactly one place. See H4.
+async function attemptSettlementOnce(position, proposal, chainKey, returnAmount) {
+  const result = await delegatePost("/execute-trade", {
+    chains:      [chainKey],
+    fromAddress: { [chainKey]: VAULT[chainKey] },
+    toAddress:   { [chainKey]: proposal.wallet.address },
+    amountUSDT:  returnAmount
+  });
+
+  const chainResult = result.results?.find(r => r.chain === chainKey);
+  if (!chainResult || chainResult.status !== "success") {
+    throw new Error(`Settlement failed: ${chainResult?.error || "unknown"}`);
+  }
+
+  return String(chainResult.txHash);
+}
+
+async function dispatchSettlementFailedAlert(position, chainKey, returnAmount, error) {
+  try {
+    const portfolio = await prisma.portfolio.findUnique({
+      where:   { id: position.portfolioId },
+      include: { workspace: true },
+    });
+    if (portfolio?.workspace?.ownerId) {
+      await notify(portfolio.workspace.ownerId, portfolio.workspaceId, "SETTLEMENT_FAILED", {
+        positionId: position.id, chainKey, returnAmount, error,
+      });
+    }
+  } catch (notifyErr) {
+    logger.error("[execution] Failed to dispatch settlement failure alert", { error: notifyErr.message });
+  }
+}
+
+// Fast path — called synchronously right after a position closes. Retries
+// a few times in-process to absorb transient blips (RPC lag, brief delegate
+// server hiccups) without waiting for the next reconciliation cycle. If
+// all attempts fail (or the process crashes mid-loop), the position is left
+// in SETTLEMENT_PENDING/SETTLEMENT_FAILED and the reconciliation job (which
+// runs independently, on its own schedule, in the worker process) will keep
+// retrying until it succeeds or a human intervenes. This is what makes
+// settlement durable — no attempt is ever silently lost to a crash. See H4.
+async function settlePosition(position, realizedPnl) {
+  const MAX_ATTEMPTS = 3;
+  const BACKOFF_MS = [1000, 3000, 9000];
+
+  const ctx = await resolveSettlementContext(position);
+  if (!ctx) {
     await prisma.position.update({
       where: { id: position.id },
       data:  { settlementStatus: "NOT_APPLICABLE" },
     });
     return;
   }
+  const { proposal, chainKey } = ctx;
 
   const returnAmount = Math.max(0, proposal.notional + realizedPnl);
 
@@ -290,7 +338,6 @@ async function settlePosition(position, realizedPnl) {
     return;
   }
 
-  // Mark pending before attempting
   await prisma.position.update({
     where: { id: position.id },
     data:  { settlementStatus: "SETTLEMENT_PENDING" },
@@ -300,19 +347,7 @@ async function settlePosition(position, realizedPnl) {
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const result = await delegatePost("/execute-trade", {
-        chains:      [chainKey],
-        fromAddress: { [chainKey]: VAULT[chainKey] },
-        toAddress:   { [chainKey]: proposal.wallet.address },
-        amountUSDT:  returnAmount
-      });
-
-      const chainResult = result.results?.find(r => r.chain === chainKey);
-      if (!chainResult || chainResult.status !== "success") {
-        throw new Error(`Settlement failed: ${chainResult?.error || "unknown"}`);
-      }
-
-      const txHash = String(chainResult.txHash);
+      const txHash = await attemptSettlementOnce(position, proposal, chainKey, returnAmount);
 
       await prisma.position.update({
         where: { id: position.id },
@@ -351,7 +386,8 @@ async function settlePosition(position, realizedPnl) {
     }
   }
 
-  // All attempts exhausted — mark FAILED and alert loudly
+  // Exhausted the fast-path attempts — mark FAILED and alert loudly. The
+  // reconciliation job will keep retrying this independently from here.
   await prisma.position.update({
     where: { id: position.id },
     data: {
@@ -360,26 +396,52 @@ async function settlePosition(position, realizedPnl) {
     },
   });
 
-  logger.error("[execution] Settlement FAILED after all retries — real funds not returned to user", {
+  logger.error("[execution] Settlement FAILED after fast-path retries — reconciliation job will keep retrying", {
     positionId: position.id, chainKey, returnAmount, error: lastError
   });
 
-  try {
-    const { notify } = require("../notifications/router");
-    const portfolio = await prisma.portfolio.findUnique({
-      where:   { id: position.portfolioId },
-      include: { workspace: true },
+  await dispatchSettlementFailedAlert(position, chainKey, returnAmount, lastError);
+}
+
+// Called by the reconciliation job — a single retry attempt for a position
+// that's already SETTLEMENT_FAILED or orphaned in SETTLEMENT_PENDING.
+async function retrySettlementOnce(position) {
+  const ctx = await resolveSettlementContext(position);
+  if (!ctx) {
+    await prisma.position.update({
+      where: { id: position.id },
+      data:  { settlementStatus: "NOT_APPLICABLE" },
     });
-    if (portfolio?.workspace?.ownerId) {
-      await notify(portfolio.workspace.ownerId, portfolio.workspaceId, "SETTLEMENT_FAILED", {
-        positionId:   position.id,
-        chainKey,
-        returnAmount,
-        error:        lastError,
-      });
-    }
-  } catch (notifyErr) {
-    logger.error("[execution] Failed to dispatch settlement failure alert", { error: notifyErr.message });
+    return { resolved: true, status: "NOT_APPLICABLE" };
+  }
+  const { proposal, chainKey } = ctx;
+
+  const returnAmount = Math.max(0, proposal.notional + (position.realizedPnl || 0));
+
+  try {
+    const txHash = await attemptSettlementOnce(position, proposal, chainKey, returnAmount);
+    await prisma.position.update({
+      where: { id: position.id },
+      data: {
+        settlementStatus:   "SETTLED",
+        settlementTxHash:   txHash,
+        settlementAttempts: { increment: 1 },
+        settlementError:    null,
+        lastSettlementAt:   new Date(),
+      },
+    });
+    return { resolved: true, status: "SETTLED", txHash };
+  } catch (err) {
+    await prisma.position.update({
+      where: { id: position.id },
+      data: {
+        settlementStatus:   "SETTLEMENT_FAILED",
+        settlementAttempts: { increment: 1 },
+        settlementError:    err.message,
+        lastSettlementAt:   new Date(),
+      },
+    });
+    return { resolved: false, status: "SETTLEMENT_FAILED", error: err.message };
   }
 }
 
@@ -439,4 +501,4 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-module.exports = { signAndExecute, cancelProposal, settlePosition };
+module.exports = { signAndExecute, cancelProposal, settlePosition, retrySettlementOnce, dispatchSettlementFailedAlert };

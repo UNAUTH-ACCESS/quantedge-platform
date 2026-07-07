@@ -27,6 +27,7 @@ const { closePosition }         = require("../services/exit.service");
 const { autoSignPendingProposals } = require("../services/autosign.service");
 const { sendDrawdownAlert }     = require("../services/lifecycle.service");
 const { watchForDeposits }      = require("../services/depositWatcher.service");
+const { reconcileStuckSettlements } = require("./settlementReconciliation.job");
 
 const SIGNAL_INTERVAL   = parseInt(process.env.SIGNAL_INTERVAL_MS    || "60000");
 const MARKET_INTERVAL   = parseInt(process.env.MARKET_FEED_INTERVAL_MS || "30000");
@@ -334,6 +335,9 @@ async function main() {
   setInterval(() => watchForDeposits().catch(err =>
     logger.error("[worker] Deposit watcher error", { error: err.message })
   ), DEPOSIT_INTERVAL);
+  setInterval(() => reconcileStuckSettlements().catch(err =>
+    logger.error("[worker] Settlement reconciliation error", { error: err.message })
+  ), 2 * 60 * 1000);
 
   logger.info("[worker] Autonomous cycle running");
 }

@@ -27,6 +27,29 @@ router.get("/", authenticate, requireWorkspace, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /positions/settlement-issues — admin visibility into stuck/failed
+// settlements (H4). Real user funds can be sitting unresolved here.
+router.get("/settlement-issues", authenticate, requireWorkspace, async (req, res, next) => {
+  try {
+    const portfolios = await prisma.portfolio.findMany({
+      where: { workspaceId: req.workspace.id },
+      select: { id: true },
+    });
+    const portfolioIds = portfolios.map(p => p.id);
+
+    const positions = await prisma.position.findMany({
+      where: {
+        portfolioId: { in: portfolioIds },
+        settlementStatus: { in: ["SETTLEMENT_FAILED", "SETTLEMENT_PENDING"] },
+      },
+      include: { asset: true, venue: true, chain: true, portfolio: { select: { id: true, name: true } } },
+      orderBy: { lastSettlementAt: "asc" },
+    });
+
+    res.json({ success: true, data: positions });
+  } catch (err) { next(err); }
+});
+
 // GET /positions/:id
 router.get("/:id", authenticate, async (req, res, next) => {
   try {
