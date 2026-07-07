@@ -1,20 +1,21 @@
 const express = require("express");
 const prisma = require("../../../lib/prisma");
-const { authenticate, requirePermission } = require("../../../middleware/auth");
+const { authenticate, requireWorkspace } = require("../../../middleware/auth");
+const { assertProposalAccess } = require("../../../middleware/ownership");
 const { AppError } = require("../../../middleware/error");
 const executionService = require("../../../services/execution.service");
 const { events, EVENTS } = require("../../../lib/events");
+const { closePosition } = require("../../../services/exit.service");
 
 const router = express.Router();
 
 // GET /proposals
-router.get("/", authenticate, async (req, res, next) => {
+router.get("/", authenticate, requireWorkspace, async (req, res, next) => {
   try {
     const { status, portfolioId, limit = 50, offset = 0 } = req.query;
-    const workspaceId = req.headers["x-workspace-id"];
 
     const portfolios = await prisma.portfolio.findMany({
-      where: { workspaceId, ...(portfolioId ? { id: portfolioId } : {}) },
+      where: { workspaceId: req.workspace.id, ...(portfolioId ? { id: portfolioId } : {}) },
       select: { id: true },
     });
     const portfolioIds = portfolios.map(p => p.id);
@@ -48,6 +49,8 @@ router.get("/", authenticate, async (req, res, next) => {
 // GET /proposals/:id
 router.get("/:id", authenticate, async (req, res, next) => {
   try {
+    await assertProposalAccess(req.params.id, req.user.id);
+
     const proposal = await prisma.tradeProposal.findUnique({
       where: { id: req.params.id },
       include: {
@@ -58,21 +61,24 @@ router.get("/:id", authenticate, async (req, res, next) => {
         fill: true,
       },
     });
-    if (!proposal) throw new AppError("Proposal not found", 404, "NOT_FOUND");
     res.json({ success: true, data: proposal });
   } catch (err) { next(err); }
 });
 
 // POST /proposals/:id/sign — user approves execution
-router.post("/:id/sign", authenticate, requirePermission("execute_trades"), async (req, res, next) => {
+router.post("/:id/sign", authenticate, async (req, res, next) => {
   try {
+    // CRITICAL: permission checked against THIS proposal's real workspace,
+    // not a client-supplied header. Previously any user with execute_trades
+    // permission in their OWN workspace could sign/execute a trade against
+    // another workspace's real funds by passing that workspace's proposal ID.
+    await assertProposalAccess(req.params.id, req.user.id, { permission: "execute_trades" });
+
     const proposal = await prisma.tradeProposal.findUnique({
       where: { id: req.params.id },
       include: { portfolio: true },
     });
-    if (!proposal) throw new AppError("Proposal not found", 404, "NOT_FOUND");
 
-    // Atomic status transition — prevents double-sign race condition
     const claimed = await prisma.tradeProposal.updateMany({
       where: { id: req.params.id, status: "PENDING" },
       data: { status: "SIGNED", signedAt: new Date() },
@@ -81,7 +87,6 @@ router.post("/:id/sign", authenticate, requirePermission("execute_trades"), asyn
       throw new AppError("Proposal is not pending or already being processed", 409, "CONFLICT");
     }
 
-    // Audit
     await prisma.auditEvent.create({
       data: {
         workspaceId: proposal.portfolio.workspaceId,
@@ -95,7 +100,6 @@ router.post("/:id/sign", authenticate, requirePermission("execute_trades"), asyn
       },
     });
 
-    // Execute asynchronously — client gets updates via socket
     executionService.signAndExecute(proposal.id)
       .then((result) => {
         events.emit(EVENTS.PROPOSAL_STATUS, { proposalId: proposal.id, status: "CONFIRMED", portfolioId: proposal.portfolioId });
@@ -105,34 +109,31 @@ router.post("/:id/sign", authenticate, requirePermission("execute_trades"), asyn
         events.emit(EVENTS.PROPOSAL_STATUS, { proposalId: proposal.id, status: "FAILED", portfolioId: proposal.portfolioId, error: err.message });
       });
 
-    // Return immediately — client polls or listens via socket
     res.json({ success: true, data: { proposalId: proposal.id, status: "SIGNED", message: "Execution in progress" } });
   } catch (err) { next(err); }
 });
 
 // POST /proposals/:id/cancel
-router.post("/:id/cancel", authenticate, requirePermission("execute_trades"), async (req, res, next) => {
+router.post("/:id/cancel", authenticate, async (req, res, next) => {
   try {
+    await assertProposalAccess(req.params.id, req.user.id, { permission: "execute_trades" });
+
     const updated = await executionService.cancelProposal(req.params.id, req.user.id);
     events.emit(EVENTS.PROPOSAL_STATUS, { proposalId: updated.id, status: "CANCELLED", portfolioId: updated.portfolioId });
     res.json({ success: true, data: updated });
   } catch (err) { next(err); }
 });
 
-module.exports = router;
-
-// POST /proposals/:id/close — manually close a position linked to a proposal
-const { closePosition } = require("../../../services/exit.service");
-
+// POST /proposals/:id/close-position — manually close a position linked to a proposal
 router.post("/:id/close-position", authenticate, async (req, res, next) => {
   try {
+    await assertProposalAccess(req.params.id, req.user.id, { permission: "execute_trades" });
+
     const proposal = await prisma.tradeProposal.findUnique({
       where: { id: req.params.id },
       include: { fill: { include: { position: true } } },
     });
-    if (!proposal) throw new AppError("Proposal not found", 404, "NOT_FOUND");
 
-    // Find linked open position
     const position = await prisma.position.findFirst({
       where: { fillId: proposal.fill?.id, status: "OPEN" },
     });
@@ -144,3 +145,5 @@ router.post("/:id/close-position", authenticate, async (req, res, next) => {
     res.json({ success: true, data: closed });
   } catch (err) { next(err); }
 });
+
+module.exports = router;
