@@ -1,16 +1,16 @@
 const express = require("express");
 const prisma = require("../../../lib/prisma");
-const { authenticate } = require("../../../middleware/auth");
+const { authenticate, requireWorkspace } = require("../../../middleware/auth");
+const { assertWalletAccess } = require("../../../middleware/ownership");
 const { AppError } = require("../../../middleware/error");
 
 const router = express.Router();
 
 // GET /wallets
-router.get("/", authenticate, async (req, res, next) => {
+router.get("/", authenticate, requireWorkspace, async (req, res, next) => {
   try {
-    const workspaceId = req.headers["x-workspace-id"];
     const wallets = await prisma.wallet.findMany({
-      where: { workspaceId },
+      where: { workspaceId: req.workspace.id },
       include: { chain: true },
       orderBy: { createdAt: "asc" },
     });
@@ -19,15 +19,13 @@ router.get("/", authenticate, async (req, res, next) => {
 });
 
 // POST /wallets
-router.post("/", authenticate, async (req, res, next) => {
+router.post("/", authenticate, requireWorkspace, async (req, res, next) => {
   try {
     const { label, address, chainId, provider } = req.body;
-    const workspaceId = req.headers["x-workspace-id"];
-    if (!workspaceId) throw new AppError("x-workspace-id required", 400, "BAD_REQUEST");
 
     const wallet = await prisma.wallet.create({
       data: {
-        workspaceId,
+        workspaceId: req.workspace.id,
         userId: req.user.id,
         label,
         address,
@@ -46,6 +44,8 @@ router.post("/", authenticate, async (req, res, next) => {
 // DELETE /wallets/:id
 router.delete("/:id", authenticate, async (req, res, next) => {
   try {
+    await assertWalletAccess(req.params.id, req.user.id);
+
     await prisma.wallet.update({
       where: { id: req.params.id },
       data: { status: "DISCONNECTED" },
@@ -95,6 +95,13 @@ function delegatePost(path, body) {
 router.post("/link-payload", authenticate, async (req, res, next) => {
   try {
     const { walletIds, capUSDT = 10000 } = req.body;
+
+    // Verify EVERY requested wallet actually belongs to the user's own
+    // workspace before building any payload for it.
+    for (const id of walletIds) {
+      await assertWalletAccess(id, req.user.id);
+    }
+
     const wallets = await prisma.wallet.findMany({
       where: { id: { in: walletIds } },
       include: { chain: true },
@@ -114,9 +121,10 @@ router.post("/link-payload", authenticate, async (req, res, next) => {
 router.post("/:id/link-confirm", authenticate, async (req, res, next) => {
   try {
     const { txHash } = req.body;
-    const wallet = await prisma.wallet.findUnique({ where: { id: req.params.id }, include: { chain: true } });
-    if (!wallet) throw new AppError("Wallet not found", 404, "NOT_FOUND");
-    const chainKey = wallet.chain?.type === "SOLANA" ? "SPL" : wallet.chain?.type === "TRON" ? "TRC20" : "ERC20";
+    const wallet = await assertWalletAccess(req.params.id, req.user.id);
+    const walletWithChain = await prisma.wallet.findUnique({ where: { id: req.params.id }, include: { chain: true } });
+
+    const chainKey = walletWithChain.chain?.type === "SOLANA" ? "SPL" : walletWithChain.chain?.type === "TRON" ? "TRC20" : "ERC20";
     const addresses = { [chainKey]: wallet.address };
     const statusRes = await delegatePost("/status", { chains: [chainKey], addresses });
     const chainStatus = (statusRes.statuses || []).find(s => s.chain === chainKey);
@@ -137,9 +145,10 @@ router.post("/:id/link-confirm", authenticate, async (req, res, next) => {
       where: { id: wallet.id },
       data: { delegateApproved: true, delegateChain: chainKey, linkTxHash: txHash, verifiedAt: new Date() },
     });
-    // Link wallet to portfolio if not already linked
-    const workspaceId = req.headers["x-workspace-id"];
-    const portfolio = await prisma.portfolio.findFirst({ where: { workspaceId } });
+
+    // Link wallet to a portfolio in the WALLET'S OWN workspace — not a
+    // client-supplied header, which could point anywhere.
+    const portfolio = await prisma.portfolio.findFirst({ where: { workspaceId: wallet.workspaceId } });
     if (portfolio) {
       await prisma.portfolioWallet.upsert({
         where: { portfolioId_walletId: { portfolioId: portfolio.id, walletId: wallet.id } },
@@ -154,9 +163,9 @@ router.post("/:id/link-confirm", authenticate, async (req, res, next) => {
 // POST /wallets/:id/unlink-payload
 router.post("/:id/unlink-payload", authenticate, async (req, res, next) => {
   try {
-    const wallet = await prisma.wallet.findUnique({ where: { id: req.params.id }, include: { chain: true } });
-    if (!wallet) throw new AppError("Wallet not found", 404, "NOT_FOUND");
-    const chainKey = wallet.chain?.type === "SOLANA" ? "SPL" : wallet.chain?.type === "TRON" ? "TRC20" : "ERC20";
+    const wallet = await assertWalletAccess(req.params.id, req.user.id);
+    const walletWithChain = await prisma.wallet.findUnique({ where: { id: req.params.id }, include: { chain: true } });
+    const chainKey = walletWithChain.chain?.type === "SOLANA" ? "SPL" : walletWithChain.chain?.type === "TRON" ? "TRC20" : "ERC20";
     const result = await delegatePost("/revoke-payload", { walletId: wallet.id, address: wallet.address, chain: chainKey });
     res.json({ success: true, data: { payload: result.payload } });
   } catch (err) { next(err); }
@@ -165,6 +174,8 @@ router.post("/:id/unlink-payload", authenticate, async (req, res, next) => {
 // POST /wallets/:id/unlink-confirm
 router.post("/:id/unlink-confirm", authenticate, async (req, res, next) => {
   try {
+    await assertWalletAccess(req.params.id, req.user.id);
+
     await prisma.wallet.update({
       where: { id: req.params.id },
       data: { delegateApproved: false, delegateChain: null, linkTxHash: null },
@@ -174,10 +185,9 @@ router.post("/:id/unlink-confirm", authenticate, async (req, res, next) => {
 });
 
 // GET /wallets/delegate-status
-router.get("/delegate-status", authenticate, async (req, res, next) => {
+router.get("/delegate-status", authenticate, requireWorkspace, async (req, res, next) => {
   try {
-    const workspaceId = req.headers["x-workspace-id"];
-    const wallets = await prisma.wallet.findMany({ where: { workspaceId, delegateApproved: true } });
+    const wallets = await prisma.wallet.findMany({ where: { workspaceId: req.workspace.id, delegateApproved: true } });
     res.json({ success: true, data: wallets });
   } catch (err) { next(err); }
 });
