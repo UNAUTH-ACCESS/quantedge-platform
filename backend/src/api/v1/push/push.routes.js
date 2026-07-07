@@ -1,6 +1,6 @@
 const express = require("express");
 const prisma   = require("../../../lib/prisma");
-const { authenticate } = require("../../../middleware/auth");
+const { authenticate, requireWorkspace } = require("../../../middleware/auth");
 const { AppError }     = require("../../../middleware/error");
 
 const router = express.Router();
@@ -13,10 +13,9 @@ router.get("/vapid-public-key", (req, res) => {
 });
 
 // POST /push/subscribe — create or update subscription
-router.post("/subscribe", authenticate, async (req, res, next) => {
+router.post("/subscribe", authenticate, requireWorkspace, async (req, res, next) => {
   try {
     const { endpoint, p256dh, auth, userAgent } = req.body;
-    const workspaceId = req.headers["x-workspace-id"];
     if (!endpoint || !p256dh || !auth) throw new AppError("endpoint, p256dh, auth required", 400, "BAD_REQUEST");
 
     const sub = await prisma.pushSubscription.upsert({
@@ -24,7 +23,7 @@ router.post("/subscribe", authenticate, async (req, res, next) => {
       update: { p256dh, auth, active: true, updatedAt: new Date() },
       create: {
         userId: req.user.id,
-        workspaceId,
+        workspaceId: req.workspace.id,
         endpoint, p256dh, auth,
         userAgent: userAgent || null,
         active: true,
