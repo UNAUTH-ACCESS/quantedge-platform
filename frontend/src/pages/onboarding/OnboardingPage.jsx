@@ -512,6 +512,37 @@ function Stage9({ onNext }) {
     return result.txid;
   }
 
+  // Retries linkConfirm with backoff — real-chain confirmation times vary
+  // (Sepolia routinely takes >2s), and the backend independently verifies
+  // real on-chain allowance before approving (see C4), so retrying here is
+  // safe: each attempt either succeeds once the tx is truly confirmed, or
+  // fails cleanly and we try again, never trusting an unconfirmed tx.
+  async function linkConfirmWithRetry(walletId, txHash, maxAttempts = 9) {
+    const delays = [2000, 3000, 5000, 8000, 8000, 10000, 10000, 10000, 10000]; // ~66s total
+    // Extended window: public devnet/testnet RPCs are load-balanced across
+    // nodes with eventual consistency — a node can briefly report stale
+    // (zero) state right after a real, confirmed approval. Observed directly
+    // in testing: allowance read 0 immediately post-confirm, then correctly
+    // read 10000 on a later query with no code change in between.
+    let lastError;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      await new Promise(r => setTimeout(r, delays[attempt] || 8000));
+      try {
+        return await walletsApi.linkConfirm(walletId, txHash);
+      } catch (e) {
+        lastError = e;
+        const code = e.response?.data?.error?.code;
+        // Only retry the specific "not confirmed yet" case — any other
+        // error (network down, wallet not found, etc.) should surface
+        // immediately rather than retrying blindly.
+        if (code !== "DELEGATE_NOT_APPROVED" && code !== "DELEGATE_STATUS_UNAVAILABLE") {
+          throw e;
+        }
+      }
+    }
+    throw lastError;
+  }
+
   async function handleConnect(chain) {
     setErrors(e  => ({ ...e, [chain.key]: null }));
     setLoading(l => ({ ...l, [chain.key]: true }));
@@ -549,8 +580,8 @@ function Stage9({ onNext }) {
         if (chain.key === "ERC20") txHash = await signEVM(address, payload);
         else if (chain.key === "SPL") txHash = await signSolana(payload);
         else txHash = await signTron(payload);
-        await new Promise(r => setTimeout(r, 2000));
-        await walletsApi.linkConfirm(walletId, typeof txHash === "object" ? txHash.hash || "confirmed" : txHash);
+        const confirmTxHash = typeof txHash === "object" ? txHash.hash || "confirmed" : txHash;
+        await linkConfirmWithRetry(walletId, confirmTxHash);
       }
       setLinked(l => ({ ...l, [chain.key]: { address, txHash } }));
     } catch (e) {
@@ -561,7 +592,9 @@ function Stage9({ onNext }) {
         // User rejected in wallet
         setErrors(er => ({ ...er, [chain.key]: "Connection rejected. Tap Connect to try again." }));
       } else {
-        const msg = e.response?.data?.message || e.response?.data?.error || e.message || "Connection failed";
+        // Backend error shape is {success:false, error:{code, message}} —
+        // read the nested message, not the error object itself.
+        const msg = e.response?.data?.error?.message || e.message || "Connection failed";
         setErrors(er => ({ ...er, [chain.key]: msg }));
       }
     } finally {
