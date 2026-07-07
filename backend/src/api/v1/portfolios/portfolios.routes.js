@@ -1,18 +1,18 @@
 const express = require("express");
 const prisma = require("../../../lib/prisma");
-const { authenticate, requireWorkspace, requirePermission } = require("../../../middleware/auth");
+const { authenticate, requireWorkspace } = require("../../../middleware/auth");
+const { assertPortfolioAccess } = require("../../../middleware/ownership");
 const { AppError } = require("../../../middleware/error");
 
 const router = express.Router();
 
 // GET /portfolios
-router.get("/", authenticate, async (req, res, next) => {
+router.get("/", authenticate, requireWorkspace, async (req, res, next) => {
   try {
-    const workspaceId = req.headers["x-workspace-id"];
-    if (!workspaceId) throw new AppError("x-workspace-id required", 400, "BAD_REQUEST");
-
+    // req.workspace is set by requireWorkspace only after verifying real
+    // ACTIVE membership — never trust the raw x-workspace-id header directly.
     const portfolios = await prisma.portfolio.findMany({
-      where: { workspaceId },
+      where: { workspaceId: req.workspace.id },
       include: {
         wallets: { include: { wallet: { include: { chain: true } } } },
         riskConfig: true,
@@ -22,7 +22,6 @@ router.get("/", authenticate, async (req, res, next) => {
       orderBy: { createdAt: "asc" },
     });
 
-    // Attach latest snapshot to each portfolio
     const portfoliosWithNav = await Promise.all(portfolios.map(async (p) => {
       const snapshot = await prisma.portfolioSnapshot.findFirst({
         where: { portfolioId: p.id },
@@ -38,6 +37,8 @@ router.get("/", authenticate, async (req, res, next) => {
 // GET /portfolios/:id
 router.get("/:id", authenticate, async (req, res, next) => {
   try {
+    await assertPortfolioAccess(req.params.id, req.user.id);
+
     const portfolio = await prisma.portfolio.findUnique({
       where: { id: req.params.id },
       include: {
@@ -46,7 +47,6 @@ router.get("/:id", authenticate, async (req, res, next) => {
         signalConfigs: { include: { signalConfig: { include: { strategy: true } } } },
       },
     });
-    if (!portfolio) throw new AppError("Portfolio not found", 404, "NOT_FOUND");
 
     const snapshot = await prisma.portfolioSnapshot.findFirst({
       where: { portfolioId: portfolio.id },
@@ -60,6 +60,8 @@ router.get("/:id", authenticate, async (req, res, next) => {
 // GET /portfolios/:id/snapshots
 router.get("/:id/snapshots", authenticate, async (req, res, next) => {
   try {
+    await assertPortfolioAccess(req.params.id, req.user.id);
+
     const { from, to, limit = 100 } = req.query;
     const snapshots = await prisma.portfolioSnapshot.findMany({
       where: {
@@ -77,6 +79,8 @@ router.get("/:id/snapshots", authenticate, async (req, res, next) => {
 // GET /portfolios/:id/positions
 router.get("/:id/positions", authenticate, async (req, res, next) => {
   try {
+    await assertPortfolioAccess(req.params.id, req.user.id);
+
     const { status } = req.query;
     const positions = await prisma.position.findMany({
       where: { portfolioId: req.params.id, ...(status ? { status } : {}) },
@@ -90,6 +94,8 @@ router.get("/:id/positions", authenticate, async (req, res, next) => {
 // GET /portfolios/:id/risk-config
 router.get("/:id/risk-config", authenticate, async (req, res, next) => {
   try {
+    await assertPortfolioAccess(req.params.id, req.user.id);
+
     const config = await prisma.riskConfig.findUnique({ where: { portfolioId: req.params.id } });
     if (!config) throw new AppError("Risk config not found", 404, "NOT_FOUND");
     res.json({ success: true, data: config });
@@ -97,8 +103,12 @@ router.get("/:id/risk-config", authenticate, async (req, res, next) => {
 });
 
 // PATCH /portfolios/:id/risk-config
-router.patch("/:id/risk-config", authenticate, requirePermission("manage_portfolios"), async (req, res, next) => {
+router.patch("/:id/risk-config", authenticate, async (req, res, next) => {
   try {
+    // Permission checked against THIS portfolio's real workspace, not a
+    // client-supplied header — closes the write-capable IDOR.
+    await assertPortfolioAccess(req.params.id, req.user.id, { permission: "manage_portfolios" });
+
     const { maxPositionPct, stopLossPct, kellyFraction, maxDrawdownPct, stressExposureCapPct, signalStrengthThreshold } = req.body;
     const config = await prisma.riskConfig.update({
       where: { portfolioId: req.params.id },
@@ -115,26 +125,24 @@ router.patch("/:id/risk-config", authenticate, requirePermission("manage_portfol
   } catch (err) { next(err); }
 });
 
-module.exports = router;
-
-// PATCH /portfolios/:id/auto-execute — enable/disable auto-execution
+// GET /portfolios/:id/auto-execute
 const { setAutoExecute, isAutoExecuteEnabled } = require("../../../services/autosign.service");
 
 router.get("/:id/auto-execute", authenticate, async (req, res, next) => {
   try {
-    const portfolio = await prisma.portfolio.findUnique({ where: { id: req.params.id } });
-    if (!portfolio) throw new AppError("Portfolio not found", 404, "NOT_FOUND");
+    await assertPortfolioAccess(req.params.id, req.user.id);
     const enabled = await isAutoExecuteEnabled(req.params.id);
     res.json({ success: true, data: { autoExecute: enabled } });
   } catch (err) { next(err); }
 });
 
-router.patch("/:id/auto-execute", authenticate, requirePermission("manage_portfolios"), async (req, res, next) => {
+// PATCH /portfolios/:id/auto-execute — enable/disable auto-execution
+router.patch("/:id/auto-execute", authenticate, async (req, res, next) => {
   try {
     const { enabled } = req.body;
     if (typeof enabled !== "boolean") throw new AppError("enabled must be boolean", 400, "BAD_REQUEST");
-    const portfolio = await prisma.portfolio.findUnique({ where: { id: req.params.id } });
-    if (!portfolio) throw new AppError("Portfolio not found", 404, "NOT_FOUND");
+
+    const portfolio = await assertPortfolioAccess(req.params.id, req.user.id, { permission: "manage_portfolios" });
     await setAutoExecute(portfolio.workspaceId, enabled);
 
     await prisma.auditEvent.create({
@@ -153,3 +161,5 @@ router.patch("/:id/auto-execute", authenticate, requirePermission("manage_portfo
     res.json({ success: true, data: { autoExecute: enabled } });
   } catch (err) { next(err); }
 });
+
+module.exports = router;
