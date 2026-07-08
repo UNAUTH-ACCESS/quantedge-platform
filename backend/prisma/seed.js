@@ -103,6 +103,7 @@ async function main() {
       passwordHash: adminPasswordHash,
       name: "Platform Admin",
       status: "ACTIVE",
+      emailVerified: true,
     },
   });
 
@@ -125,6 +126,7 @@ async function main() {
       passwordHash: ownerPasswordHash,
       name: "ELSE",
       status: "ACTIVE",
+      emailVerified: true,
     },
   });
 
