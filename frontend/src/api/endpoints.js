@@ -4,6 +4,10 @@ export const auth = {
   login:   (email, password) => client.post("/auth/login", { email, password }),
   refresh: (refreshToken)    => client.post("/auth/refresh", { refreshToken }),
   logout:  (refreshToken)    => client.post("/auth/logout", { refreshToken }),
+  register: (email, password, name, workspaceName) =>
+    client.post("/auth/register", { email, password, name, workspaceName }),
+  verifyEmail: (token) => client.post("/auth/verify-email", { token }),
+  resendVerification: () => client.post("/auth/resend-verification"),
 };
 
 export const signals = {

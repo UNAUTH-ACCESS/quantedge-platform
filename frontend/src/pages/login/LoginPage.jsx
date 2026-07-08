@@ -144,7 +144,7 @@ export default function LoginPage() {
         </form>
 
         <div style={{ marginTop: 24, fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: colors.muted, textAlign: "center" }}>
-          Access is by invitation only
+          Don't have an account? <a href="/signup" style={{ color: colors.green, textDecoration: "none" }}>Create one</a>
         </div>
       </div>
     </div>

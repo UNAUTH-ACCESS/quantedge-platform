@@ -59,7 +59,14 @@ router.post("/register", [
       });
 
       const workspace = await tx.workspace.create({
-        data: { name: workspaceName, slug, ownerId: user.id },
+        data: {
+          name: workspaceName, slug, ownerId: user.id,
+          // Explicitly seed onboarding state — without this, settings is {}
+          // (no onboarding key at all), and RouteGuard's "!onboarding = already
+          // complete" fallback incorrectly sends brand-new accounts straight
+          // to a dashboard with nothing configured instead of onboarding.
+          settings: { onboarding: { stage: 3, complete: false, data: {} } },
+        },
       });
 
       // Create workspace roles

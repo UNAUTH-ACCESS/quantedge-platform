@@ -39,6 +39,27 @@ const useAuthStore = create((set, get) => ({
     }
   },
 
+  register: async (email, password, name, workspaceName) => {
+    set({ status: "authenticating", error: null });
+    try {
+      await authApi.register(email, password, name, workspaceName);
+      // Registration succeeded — log in normally so full state (workspaces,
+      // roles, etc.) populates through the same tested path as a real login,
+      // rather than hand-reconstructing partial state from register's response.
+      return await get().login(email, password);
+    } catch (err) {
+      const message = err.response?.data?.error?.message || err.message || "Registration failed";
+      set({ status: "error", error: message });
+      return { ok: false, error: message };
+    }
+  },
+
+  // Called after successful email verification to update local state
+  // without requiring a full re-login.
+  markEmailVerified: () => {
+    set((state) => ({ user: state.user ? { ...state.user, emailVerified: true } : state.user }));
+  },
+
   logout: async () => {
     try {
       const refreshToken = localStorage.getItem("qe_refresh_token");

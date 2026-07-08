@@ -2,7 +2,7 @@ import { Navigate, useLocation } from "react-router-dom";
 import useAuthStore from "../../store/auth.store";
 
 export function RouteGuard({ children, onboardingExempt = false }) {
-  const { status, activeWorkspace } = useAuthStore();
+  const { status, activeWorkspace, user } = useAuthStore();
   const location = useLocation();
 
   if (status === "authenticating") {
@@ -20,6 +20,13 @@ export function RouteGuard({ children, onboardingExempt = false }) {
 
   if (status !== "authenticated") {
     return <Navigate to="/login" state={{ from: location }} replace />;
+  }
+
+  // Email verification gate — applies before onboarding too, since real
+  // fund custody starts there. user.emailVerified is undefined for accounts
+  // that pre-date this feature (treated as verified, not re-gated).
+  if (user?.emailVerified === false && location.pathname !== "/verify-email") {
+    return <Navigate to="/verify-email" replace />;
   }
 
   if (!onboardingExempt) {
