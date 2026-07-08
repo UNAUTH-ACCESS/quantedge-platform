@@ -14,12 +14,26 @@
 
 const prisma = require("../lib/prisma");
 const logger = require("../lib/logger");
+const config = require("../lib/config");
 
 const RESEND_API_URL = "https://api.resend.com/emails";
-const FROM_ADDRESS   = "QuantEdge <onboarding@resend.dev>";
-const APP_URL        = process.env.APP_URL || "https://quantedge.exchange";
+const FROM_ADDRESS   = config.FROM_EMAIL;
+const APP_URL        = config.APP_URL;
 
 // ── Triggers ──────────────────────────────────────────────────────────────────
+
+async function sendVerificationEmail(userId, token) {
+  try {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) return;
+
+    const verifyUrl = `${APP_URL}/verify-email?token=${token}`;
+    await send(user.email, "Verify your QuantEdge email", buildVerification(user, verifyUrl));
+    logger.info("[lifecycle] Verification email sent", { userId, email: user.email });
+  } catch (err) {
+    logger.warn("[lifecycle] Verification email failed", { userId, error: err.message });
+  }
+}
 
 async function sendWelcome(userId, workspaceId) {
   try {
@@ -97,6 +111,25 @@ async function runWeeklySummaries() {
 }
 
 // ── Templates ─────────────────────────────────────────────────────────────────
+
+function buildVerification(user, verifyUrl) {
+  return layout(`
+    <p style="font-size:18px;font-weight:600;margin-bottom:16px;color:#E8F4F8;">
+      Verify your email, ${user.name}
+    </p>
+    <p style="margin-bottom:20px;color:#9BA8B4;">
+      One more step before you can start trading — confirm this is really your email address.
+      This link expires in 24 hours.
+    </p>
+    <a href="${verifyUrl}" style="display:inline-block;background:#00D4AA;color:#0A0A0F;
+       padding:12px 24px;border-radius:4px;font-weight:700;text-decoration:none;font-size:13px;">
+      Verify Email →
+    </a>
+    <p style="margin-top:24px;font-size:11px;color:#5A6478;">
+      If you didn't create a QuantEdge account, you can safely ignore this email.
+    </p>
+  `);
+}
 
 function buildWelcome(user, workspace) {
   return layout(`
@@ -231,7 +264,7 @@ function formatDate(d) {
 }
 
 async function send(to, subject, html) {
-  const apiKey = process.env.RESEND_API_KEY;
+  const apiKey = config.RESEND_API_KEY;
   if (!apiKey) throw new Error("RESEND_API_KEY not configured");
   const res = await fetch(RESEND_API_URL, {
     method:  "POST",
@@ -247,5 +280,5 @@ async function send(to, subject, html) {
 
 module.exports = {
   sendWelcome, sendFirstTrade, sendDrawdownAlert,
-  sendWeeklySummary, runWeeklySummaries,
+  sendWeeklySummary, runWeeklySummaries, sendVerificationEmail,
 };

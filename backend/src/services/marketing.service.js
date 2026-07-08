@@ -14,10 +14,11 @@
 
 const prisma = require("../lib/prisma");
 const logger = require("../lib/logger");
+const config = require("../lib/config");
 
 const RESEND_API_URL  = "https://api.resend.com/emails";
-const FROM_ADDRESS    = "QuantEdge <onboarding@resend.dev>";
-const APP_URL         = process.env.APP_URL || "https://quantedge.exchange";
+const FROM_ADDRESS    = config.FROM_EMAIL;
+const APP_URL         = config.APP_URL;
 
 // ── Subscriber management ─────────────────────────────────────────────────────
 
@@ -177,7 +178,7 @@ function buildEmail(subscriber, subject, bodyHtml) {
 }
 
 async function sendEmail(to, subject, html) {
-  const apiKey = process.env.RESEND_API_KEY;
+  const apiKey = config.RESEND_API_KEY;
   if (!apiKey) throw new Error("RESEND_API_KEY not configured");
 
   const res = await fetch(RESEND_API_URL, {
