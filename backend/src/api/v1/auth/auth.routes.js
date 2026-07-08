@@ -49,7 +49,7 @@ async function issueLoginResponse(res, user) {
     success: true,
     data: {
       accessToken: access, refreshToken: refresh,
-      user: { id: user.id, email: user.email, name: user.name, emailVerified: user.emailVerified },
+      user: { id: user.id, email: user.email, name: user.name, emailVerified: user.emailVerified, twoFactorEnabled: user.twoFactorEnabled },
       workspaces: memberships.map(m => ({ id: m.workspace.id, name: m.workspace.name, slug: m.workspace.slug, role: m.role.name, settings: m.workspace.settings })),
     },
   });
@@ -141,7 +141,7 @@ router.post("/register", [
       success: true,
       data: {
         accessToken: access, refreshToken: refresh,
-        user: { id: result.user.id, email, name, emailVerified: false },
+        user: { id: result.user.id, email, name, emailVerified: false, twoFactorEnabled: false },
         workspace: { id: result.workspace.id, slug },
       },
     });
@@ -310,6 +310,31 @@ router.post("/refresh", async (req, res, next) => {
     await prisma.refreshToken.create({ data: { userId: payload.sub, token: refresh, expiresAt } });
 
     res.json({ success: true, data: { accessToken: access, refreshToken: refresh } });
+  } catch (err) { next(err); }
+});
+
+// GET /auth/me — refetch fresh current-user data. Used to rehydrate the
+// frontend's user/workspaces state after a page reload, since that state
+// only ever lived in memory otherwise (a reload kept the auth token but
+// silently reset user to null, making every user.* field stale/wrong
+// until a fresh login).
+router.get("/me", authenticate, async (req, res, next) => {
+  try {
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    if (!user) throw new AppError("User not found", 404, "NOT_FOUND");
+
+    const memberships = await prisma.membership.findMany({
+      where: { userId: user.id, status: "ACTIVE" },
+      include: { workspace: true, role: true },
+    });
+
+    res.json({
+      success: true,
+      data: {
+        user: { id: user.id, email: user.email, name: user.name, emailVerified: user.emailVerified, twoFactorEnabled: user.twoFactorEnabled },
+        workspaces: memberships.map(m => ({ id: m.workspace.id, name: m.workspace.name, slug: m.workspace.slug, role: m.role.name, settings: m.workspace.settings })),
+      },
+    });
   } catch (err) { next(err); }
 });
 

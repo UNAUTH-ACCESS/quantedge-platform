@@ -58,6 +58,12 @@ function AuthenticatedApp() {
 }
 
 export default function App() {
+  const bootstrap = useAuthStore((s) => s.bootstrap);
+
+  useEffect(() => {
+    bootstrap();
+  }, []);
+
   return (
     <Routes>
       <Route path="/login" element={<LoginPage/>} />

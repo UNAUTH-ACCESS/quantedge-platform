@@ -9,6 +9,7 @@ import { usePermissions } from "../../hooks/usePermissions";
 import { colors, regime as regimeMeta } from "../../lib/tokens";
 import { fmt } from "../../lib/format";
 import { registerPush, unregisterPush } from "../../lib/push";
+import { auth as authApi } from "../../api/endpoints";
 
 function Section({ title, children }) {
   return (
@@ -196,6 +197,179 @@ function PushNotificationsToggle() {
   );
 }
 
+function TwoFactorSetup() {
+  const { user, setTwoFactorEnabled } = useAuthStore();
+  const [view, setView]       = useState("idle"); // idle | setup | backup-codes | disable
+  const [qrCode, setQrCode]   = useState(null);
+  const [secret, setSecret]   = useState(null);
+  const [code, setCode]       = useState("");
+  const [backupCodes, setBackupCodes] = useState([]);
+  const [error, setError]     = useState(null);
+  const [busy, setBusy]       = useState(false);
+
+  const enabled = !!user?.twoFactorEnabled;
+
+  const startSetup = async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      const res = await authApi.setup2FA();
+      setQrCode(res.data.data.qrCodeDataUrl);
+      setSecret(res.data.data.secret);
+      setView("setup");
+    } catch (err) {
+      setError(err.response?.data?.error?.message || "Couldn't start setup");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmEnable = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setBusy(true);
+    try {
+      const res = await authApi.enable2FA(code);
+      setBackupCodes(res.data.data.backupCodes);
+      setTwoFactorEnabled(true);
+      setView("backup-codes");
+      setCode("");
+    } catch (err) {
+      setError(err.response?.data?.error?.message || "Invalid code");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmDisable = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setBusy(true);
+    try {
+      await authApi.disable2FA(code);
+      setTwoFactorEnabled(false);
+      setView("idle");
+      setCode("");
+    } catch (err) {
+      setError(err.response?.data?.error?.message || "Invalid code");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const codeInputStyle = {
+    width: "100%", boxSizing: "border-box",
+    background: colors.surface, border: `1px solid ${colors.border2}`,
+    borderRadius: 4, padding: "10px 12px", fontSize: 15,
+    letterSpacing: "0.2em", textAlign: "center",
+    fontFamily: "'JetBrains Mono', monospace", color: colors.text, outline: "none",
+  };
+  const btnStyle = (disabled) => ({
+    background: disabled ? colors.surface2 : colors.green,
+    color: disabled ? colors.muted : colors.bg,
+    border: "none", borderRadius: 4, padding: "9px 16px",
+    fontSize: 11, fontFamily: "'JetBrains Mono', monospace", fontWeight: 700,
+    letterSpacing: "0.06em", cursor: disabled ? "not-allowed" : "pointer",
+  });
+  const errStyle = {
+    background: "#FF4D6D11", border: "1px solid #FF4D6D44", borderRadius: 4,
+    padding: "8px 10px", marginTop: 10, marginBottom: 4,
+    fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: colors.red,
+  };
+
+  if (view === "backup-codes") {
+    return (
+      <div>
+        <div style={{ fontSize: 11, color: colors.green, marginBottom: 8, fontWeight: 600 }}>
+          ✅ 2FA enabled — save these backup codes
+        </div>
+        <div style={{ fontSize: 10, color: colors.muted, marginBottom: 10 }}>
+          Each code works once, if you lose access to your authenticator app. They won't be shown again.
+        </div>
+        <div style={{
+          background: colors.surface2, border: `1px solid ${colors.border2}`, borderRadius: 4,
+          padding: "10px 12px", fontFamily: "'JetBrains Mono', monospace", fontSize: 12,
+          color: colors.text, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 12,
+        }}>
+          {backupCodes.map(c => <div key={c}>{c}</div>)}
+        </div>
+        <button style={btnStyle(false)} onClick={() => setView("idle")}>Done</button>
+      </div>
+    );
+  }
+
+  if (view === "setup") {
+    return (
+      <form onSubmit={confirmEnable}>
+        <div style={{ fontSize: 10, color: colors.muted, marginBottom: 10 }}>
+          Scan with Google Authenticator, Authy, or any TOTP app.
+        </div>
+        {qrCode && <img src={qrCode} alt="2FA QR code" style={{ width: 160, height: 160, marginBottom: 10, borderRadius: 4 }} />}
+        <div style={{ fontSize: 9, color: colors.muted, marginBottom: 12, wordBreak: "break-all" }}>
+          Manual entry: {secret}
+        </div>
+        <input
+          type="text" value={code} onChange={(e) => setCode(e.target.value)}
+          required autoFocus placeholder="000000" style={{ ...codeInputStyle, marginBottom: 10 }}
+        />
+        {error && <div style={errStyle}>{error}</div>}
+        <div style={{ display: "flex", gap: 8 }}>
+          <button type="submit" disabled={busy || !code} style={btnStyle(busy || !code)}>
+            {busy ? "Verifying…" : "Enable"}
+          </button>
+          <button type="button" onClick={() => { setView("idle"); setError(null); }} style={{ ...btnStyle(false), background: colors.surface2, color: colors.muted }}>
+            Cancel
+          </button>
+        </div>
+      </form>
+    );
+  }
+
+  if (view === "disable") {
+    return (
+      <form onSubmit={confirmDisable}>
+        <div style={{ fontSize: 10, color: colors.muted, marginBottom: 10 }}>
+          Enter a code from your authenticator app (or a backup code) to disable 2FA.
+        </div>
+        <input
+          type="text" value={code} onChange={(e) => setCode(e.target.value)}
+          required autoFocus placeholder="000000" style={{ ...codeInputStyle, marginBottom: 10 }}
+        />
+        {error && <div style={errStyle}>{error}</div>}
+        <div style={{ display: "flex", gap: 8 }}>
+          <button type="submit" disabled={busy || !code} style={{ ...btnStyle(busy || !code), background: busy || !code ? colors.surface2 : colors.red }}>
+            {busy ? "Disabling…" : "Disable 2FA"}
+          </button>
+          <button type="button" onClick={() => { setView("idle"); setError(null); }} style={{ ...btnStyle(false), background: colors.surface2, color: colors.muted }}>
+            Cancel
+          </button>
+        </div>
+      </form>
+    );
+  }
+
+  // idle
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: colors.muted, marginBottom: 12 }}>
+        {enabled
+          ? "Two-factor authentication is enabled on your account."
+          : "Add an extra layer of security — require a code from your phone at login."}
+      </div>
+      {error && <div style={errStyle}>{error}</div>}
+      {enabled ? (
+        <button style={{ ...btnStyle(false), background: colors.surface2, color: colors.red }} onClick={() => setView("disable")}>
+          Disable 2FA
+        </button>
+      ) : (
+        <button style={btnStyle(busy)} disabled={busy} onClick={startSetup}>
+          {busy ? "Starting…" : "Set Up 2FA"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function Settings() {
   const { user, activeWorkspace } = useAuthStore();
   const { canManagePortfolios, isAccountAdmin } = usePermissions();
@@ -298,6 +472,10 @@ export default function Settings() {
 
         <Section title="Notifications">
           <PushNotificationsToggle/>
+        </Section>
+
+        <Section title="Two-Factor Authentication">
+          <TwoFactorSetup/>
         </Section>
 
         <Section title="System">
