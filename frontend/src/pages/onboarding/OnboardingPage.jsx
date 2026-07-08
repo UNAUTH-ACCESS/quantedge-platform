@@ -410,6 +410,7 @@ function Stage9({ onNext }) {
   const [linked,  setLinked]  = useState({});
   const [errors,  setErrors]  = useState({});
   const [loading, setLoading] = useState({});
+  const [providerTick, setProviderTick] = useState(0); // forces re-render as wallet providers inject
   const hasLinked = Object.keys(linked).length > 0;
 
   // On mount — check DB for already-linked wallets and pre-populate
@@ -424,6 +425,26 @@ function Stage9({ onNext }) {
       }
       if (Object.keys(alreadyLinked).length > 0) setLinked(alreadyLinked);
     }).catch(() => {});
+  }, []);
+
+  // Wallet providers (window.phantom, window.solana, window.tronWeb) can
+  // inject moments AFTER this component's first render, especially inside
+  // in-app browsers. Without this, the Connect/Open button label can show
+  // a stale "Open in X" (deep-link) even though the provider becomes
+  // available a moment later, before the user actually clicks. Poll briefly
+  // on mount and force a re-render as soon as any provider shows up.
+  useEffect(() => {
+    let attempts = 0;
+    const maxAttempts = 15; // ~3s at 200ms intervals
+    const interval = setInterval(() => {
+      attempts++;
+      const anyProvider = !!(window.phantom?.ethereum || window.solana?.isPhantom || window.tronWeb);
+      if (anyProvider || attempts >= maxAttempts) {
+        setProviderTick(t => t + 1);
+        clearInterval(interval);
+      }
+    }, 200);
+    return () => clearInterval(interval);
   }, []);
 
   const QUANTEDGE_NETWORK_PARAMS = {
