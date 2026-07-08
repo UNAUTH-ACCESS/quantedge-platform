@@ -2,6 +2,8 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
+const { generateSecret, generate, verify, generateURI } = require("otplib");
+const qrcode = require("qrcode");
 const { v4: uuidv4 } = require("uuid");
 const { body, validationResult } = require("express-validator");
 const prisma = require("../../../lib/prisma");
@@ -13,6 +15,44 @@ const EMAIL_VERIFICATION_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24h
 
 function generateVerificationToken() {
   return crypto.randomBytes(32).toString("hex");
+}
+
+const TWO_FA_PENDING_EXPIRY = "5m";
+
+function generateTwoFactorPendingToken(userId) {
+  return jwt.sign({ sub: userId, purpose: "2fa_pending" }, process.env.JWT_SECRET, {
+    expiresIn: TWO_FA_PENDING_EXPIRY,
+  });
+}
+
+function generateBackupCodes(count = 8) {
+  return Array.from({ length: count }, () =>
+    crypto.randomBytes(5).toString("hex").toUpperCase()
+  );
+}
+
+// Builds and sends the full authenticated login response — real access/
+// refresh tokens + memberships. Shared by /login (when 2FA is off) and
+// /2fa/verify-login (after a 2FA code is confirmed), so token issuance
+// logic exists in exactly one place.
+async function issueLoginResponse(res, user) {
+  const memberships = await prisma.membership.findMany({
+    where: { userId: user.id, status: "ACTIVE" },
+    include: { workspace: true, role: true },
+  });
+
+  const { access, refresh } = generateTokens(user.id);
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  await prisma.refreshToken.create({ data: { userId: user.id, token: refresh, expiresAt } });
+
+  res.json({
+    success: true,
+    data: {
+      accessToken: access, refreshToken: refresh,
+      user: { id: user.id, email: user.email, name: user.name, emailVerified: user.emailVerified },
+      workspaces: memberships.map(m => ({ id: m.workspace.id, name: m.workspace.name, slug: m.workspace.slug, role: m.role.name, settings: m.workspace.settings })),
+    },
+  });
 }
 
 const router = express.Router();
@@ -124,19 +164,133 @@ router.post("/login", [
     }
     if (user.status !== "ACTIVE") throw new AppError("Account suspended", 403, "FORBIDDEN");
 
-    const memberships = await prisma.membership.findMany({
-      where: { userId: user.id, status: "ACTIVE" },
-      include: { workspace: true, role: true },
+    if (user.twoFactorEnabled) {
+      const pendingToken = generateTwoFactorPendingToken(user.id);
+      return res.json({ success: true, data: { requires2FA: true, pendingToken } });
+    }
+
+    await issueLoginResponse(res, user);
+  } catch (err) { next(err); }
+});
+
+// POST /auth/2fa/verify-login — second step of login when 2FA is enabled
+router.post("/2fa/verify-login", [
+  body("pendingToken").isString().isLength({ min: 1 }),
+  body("code").isString().isLength({ min: 6, max: 10 }),
+], async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) throw new AppError("Validation failed", 400, "VALIDATION_ERROR");
+
+    const { pendingToken, code } = req.body;
+
+    let payload;
+    try {
+      payload = jwt.verify(pendingToken, process.env.JWT_SECRET);
+    } catch {
+      throw new AppError("2FA session expired — please log in again", 401, "UNAUTHORIZED");
+    }
+    if (payload.purpose !== "2fa_pending") throw new AppError("Invalid session", 401, "UNAUTHORIZED");
+
+    const user = await prisma.user.findUnique({ where: { id: payload.sub } });
+    if (!user || !user.twoFactorEnabled) throw new AppError("Invalid session", 401, "UNAUTHORIZED");
+
+    // verify() throws (rather than returning invalid) when the token isn't
+    // exactly 6 digits — true for backup codes, so only attempt TOTP
+    // verification when the token actually looks like a TOTP code.
+    let totpValid = false;
+    if (/^\d{6}$/.test(code)) {
+      const totpResult = await verify({ secret: user.twoFactorSecret, token: code });
+      totpValid = totpResult.valid;
+    }
+
+    if (totpValid) {
+      await issueLoginResponse(res, user);
+      return;
+    }
+
+    // Fall back to a single-use backup code
+    const normalizedCode = code.trim().toUpperCase();
+    const codeIndex = user.twoFactorBackupCodes.indexOf(normalizedCode);
+    if (codeIndex === -1) throw new AppError("Invalid 2FA code", 401, "UNAUTHORIZED");
+
+    const remainingCodes = [...user.twoFactorBackupCodes];
+    remainingCodes.splice(codeIndex, 1);
+    await prisma.user.update({ where: { id: user.id }, data: { twoFactorBackupCodes: remainingCodes } });
+
+    await issueLoginResponse(res, user);
+  } catch (err) { next(err); }
+});
+
+// POST /auth/2fa/setup — generates a new (not-yet-enabled) TOTP secret + QR code
+router.post("/2fa/setup", authenticate, async (req, res, next) => {
+  try {
+    if (req.user.status !== "ACTIVE") throw new AppError("Account not active", 403, "FORBIDDEN");
+
+    const secret = generateSecret();
+    await prisma.user.update({ where: { id: req.user.id }, data: { twoFactorSecret: secret } });
+
+    const otpauthUrl = generateURI({ issuer: "QuantEdge", label: req.user.email, secret });
+    const qrCodeDataUrl = await qrcode.toDataURL(otpauthUrl);
+
+    res.json({ success: true, data: { secret, qrCodeDataUrl } });
+  } catch (err) { next(err); }
+});
+
+// POST /auth/2fa/enable — confirms the code from setup, turns 2FA on, issues backup codes
+router.post("/2fa/enable", authenticate, [
+  body("code").isString().isLength({ min: 6, max: 10 }),
+], async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) throw new AppError("Validation failed", 400, "VALIDATION_ERROR");
+
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    if (!user.twoFactorSecret) throw new AppError("Call /2fa/setup first", 400, "BAD_REQUEST");
+
+    if (!/^\d{6}$/.test(req.body.code)) {
+      throw new AppError("Enter the 6-digit code from your authenticator app", 400, "INVALID_CODE");
+    }
+    const enableResult = await verify({ secret: user.twoFactorSecret, token: req.body.code });
+    if (!enableResult.valid) throw new AppError("Invalid code — check your authenticator app and try again", 400, "INVALID_CODE");
+
+    const backupCodes = generateBackupCodes();
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { twoFactorEnabled: true, twoFactorBackupCodes: backupCodes },
     });
 
-    const { access, refresh } = generateTokens(user.id);
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-    await prisma.refreshToken.create({ data: { userId: user.id, token: refresh, expiresAt } });
+    // Backup codes are shown ONCE, in plaintext, right now — never retrievable again.
+    res.json({ success: true, data: { enabled: true, backupCodes } });
+  } catch (err) { next(err); }
+});
 
-    res.json({
-      success: true,
-      data: { accessToken: access, refreshToken: refresh, user: { id: user.id, email: user.email, name: user.name, emailVerified: user.emailVerified }, workspaces: memberships.map(m => ({ id: m.workspace.id, name: m.workspace.name, slug: m.workspace.slug, role: m.role.name, settings: m.workspace.settings })) },
+// POST /auth/2fa/disable — requires a valid current code (TOTP or backup),
+// so a stolen session alone can't silently turn off 2FA.
+router.post("/2fa/disable", authenticate, [
+  body("code").isString().isLength({ min: 6, max: 10 }),
+], async (req, res, next) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) throw new AppError("Validation failed", 400, "VALIDATION_ERROR");
+
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    if (!user.twoFactorEnabled) throw new AppError("2FA is not enabled", 400, "BAD_REQUEST");
+
+    let disableTotpValid = false;
+    if (/^\d{6}$/.test(req.body.code)) {
+      const disableResult = await verify({ secret: user.twoFactorSecret, token: req.body.code });
+      disableTotpValid = disableResult.valid;
+    }
+    const validBackup = user.twoFactorBackupCodes.includes(req.body.code.trim().toUpperCase());
+    if (!disableTotpValid && !validBackup) throw new AppError("Invalid code", 401, "UNAUTHORIZED");
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { twoFactorEnabled: false, twoFactorSecret: null, twoFactorBackupCodes: [] },
     });
+
+    res.json({ success: true, data: { enabled: false } });
   } catch (err) { next(err); }
 });
 
