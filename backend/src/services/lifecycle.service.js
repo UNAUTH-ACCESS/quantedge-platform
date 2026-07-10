@@ -35,6 +35,18 @@ async function sendVerificationEmail(userId, token) {
   }
 }
 
+async function sendNewDeviceAlert(userId, userAgent) {
+  try {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) return;
+
+    await send(user.email, "New sign-in to your QuantEdge account", buildNewDeviceAlert(user, userAgent));
+    logger.info("[lifecycle] New device alert sent", { userId });
+  } catch (err) {
+    logger.warn("[lifecycle] New device alert failed", { userId, error: err.message });
+  }
+}
+
 async function sendWelcome(userId, workspaceId) {
   try {
     const user      = await prisma.user.findUnique({ where: { id: userId } });
@@ -128,6 +140,29 @@ function buildVerification(user, verifyUrl) {
     <p style="margin-top:24px;font-size:11px;color:#5A6478;">
       If you didn't create a QuantEdge account, you can safely ignore this email.
     </p>
+  `);
+}
+
+function buildNewDeviceAlert(user, userAgent) {
+  return layout(`
+    <p style="font-size:18px;font-weight:600;margin-bottom:16px;color:#E8F4F8;">
+      New sign-in detected
+    </p>
+    <p style="margin-bottom:16px;color:#9BA8B4;">
+      Your QuantEdge account was just accessed from a device we haven't seen before.
+    </p>
+    <div style="background:#0A0A0F;border:1px solid #1E1E2E;border-radius:6px;padding:16px;margin-bottom:20px;">
+      ${tradeRow("Time", new Date().toUTCString())}
+      ${tradeRow("Device", userAgent || "Unknown")}
+    </div>
+    <p style="margin-bottom:20px;color:#9BA8B4;">
+      If this was you, no action is needed. If you don't recognize this, change your
+      password immediately and enable two-factor authentication in Settings.
+    </p>
+    <a href="${APP_URL}/settings" style="display:inline-block;background:#00D4AA;color:#0A0A0F;
+       padding:12px 24px;border-radius:4px;font-weight:700;text-decoration:none;font-size:13px;">
+      Review Account Security →
+    </a>
   `);
 }
 
@@ -280,5 +315,5 @@ async function send(to, subject, html) {
 
 module.exports = {
   sendWelcome, sendFirstTrade, sendDrawdownAlert,
-  sendWeeklySummary, runWeeklySummaries, sendVerificationEmail,
+  sendWeeklySummary, runWeeklySummaries, sendVerificationEmail, sendNewDeviceAlert,
 };

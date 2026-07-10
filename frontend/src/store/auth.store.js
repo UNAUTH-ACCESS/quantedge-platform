@@ -1,5 +1,17 @@
 import { create } from "zustand";
 import { auth as authApi } from "../api/endpoints";
+import { getOrCreateDeviceId } from "../lib/device";
+
+// Clears auth-specific keys only — qe_device_id must survive logout/invalid-
+// token cases, since it identifies the physical device across sessions,
+// not the current login (Stage 11 device tracking would otherwise treat
+// every post-logout login as a brand-new device, forever).
+function clearAuthStorage() {
+  localStorage.removeItem("qe_access_token");
+  localStorage.removeItem("qe_refresh_token");
+  localStorage.removeItem("qe_user_id");
+  localStorage.removeItem("qe_workspace_id");
+}
 
 const useAuthStore = create((set, get) => ({
   user:        null,
@@ -30,7 +42,7 @@ const useAuthStore = create((set, get) => ({
       if (active) localStorage.setItem("qe_workspace_id", active.id);
       set({ user, workspaces, activeWorkspace: active, accessToken: token, status: "authenticated" });
     } catch {
-      localStorage.clear();
+      clearAuthStorage();
       set({ user: null, workspaces: [], activeWorkspace: null, accessToken: null, status: "unauthenticated" });
     }
   },
@@ -38,7 +50,7 @@ const useAuthStore = create((set, get) => ({
   login: async (email, password) => {
     set({ status: "authenticating", error: null });
     try {
-      const { data } = await authApi.login(email, password);
+      const { data } = await authApi.login(email, password, getOrCreateDeviceId());
 
       if (data.data.requires2FA) {
         // Don't set status:authenticated yet — caller (LoginPage) shows a
@@ -60,7 +72,7 @@ const useAuthStore = create((set, get) => ({
   verify2FA: async (pendingToken, code) => {
     set({ status: "authenticating", error: null });
     try {
-      const { data } = await authApi.verify2FALogin(pendingToken, code);
+      const { data } = await authApi.verify2FALogin(pendingToken, code, getOrCreateDeviceId());
       const { accessToken, refreshToken, user, workspaces } = data.data;
       get()._applySession(accessToken, refreshToken, user, workspaces);
       return { ok: true };
@@ -121,7 +133,7 @@ const useAuthStore = create((set, get) => ({
       const refreshToken = localStorage.getItem("qe_refresh_token");
       await authApi.logout(refreshToken);
     } catch { /* ignore */ } finally {
-      localStorage.clear();
+      clearAuthStorage();
       set({ user: null, workspaces: [], activeWorkspace: null, accessToken: null, status: "unauthenticated", error: null });
     }
   },

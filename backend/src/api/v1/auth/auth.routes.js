@@ -9,7 +9,8 @@ const { body, validationResult } = require("express-validator");
 const prisma = require("../../../lib/prisma");
 const { AppError } = require("../../../middleware/error");
 const { authenticate } = require("../../../middleware/auth");
-const { sendWelcome, sendVerificationEmail } = require("../../../services/lifecycle.service");
+const { sendWelcome, sendVerificationEmail, sendNewDeviceAlert } = require("../../../services/lifecycle.service");
+const logger = require("../../../lib/logger");
 
 const EMAIL_VERIFICATION_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24h
 
@@ -31,11 +32,37 @@ function generateBackupCodes(count = 8) {
   );
 }
 
+// Checks/records the device this login came from. Fires a "new sign-in"
+// email the first time a given device is seen for this user; silent
+// (just bumps lastSeenAt) on every subsequent login from the same device.
+// deviceId is a UUID the client generates once and persists in
+// localStorage — far more stable than User-Agent alone, which many users
+// share and which doesn't survive incognito/reinstalls anyway.
+async function recordDeviceAndAlertIfNew(userId, deviceId, userAgent) {
+  if (!deviceId) return; // older clients pre-dating this feature won't send one
+  try {
+    const existing = await prisma.knownDevice.findUnique({
+      where: { userId_deviceId: { userId, deviceId } },
+    });
+    if (existing) {
+      await prisma.knownDevice.update({ where: { id: existing.id }, data: { lastSeenAt: new Date() } });
+      return;
+    }
+    await prisma.knownDevice.create({ data: { userId, deviceId, userAgent } });
+    await sendNewDeviceAlert(userId, userAgent);
+  } catch (err) {
+    // Never let device tracking break a real login
+    logger.warn("[auth] Device tracking failed", { userId, error: err.message });
+  }
+}
+
 // Builds and sends the full authenticated login response — real access/
 // refresh tokens + memberships. Shared by /login (when 2FA is off) and
 // /2fa/verify-login (after a 2FA code is confirmed), so token issuance
 // logic exists in exactly one place.
-async function issueLoginResponse(res, user) {
+async function issueLoginResponse(res, user, deviceId, userAgent) {
+  await recordDeviceAndAlertIfNew(user.id, deviceId, userAgent);
+
   const memberships = await prisma.membership.findMany({
     where: { userId: user.id, status: "ACTIVE" },
     include: { workspace: true, role: true },
@@ -169,7 +196,7 @@ router.post("/login", [
       return res.json({ success: true, data: { requires2FA: true, pendingToken } });
     }
 
-    await issueLoginResponse(res, user);
+    await issueLoginResponse(res, user, req.body.deviceId, req.headers["user-agent"]);
   } catch (err) { next(err); }
 });
 
@@ -205,7 +232,7 @@ router.post("/2fa/verify-login", [
     }
 
     if (totpValid) {
-      await issueLoginResponse(res, user);
+      await issueLoginResponse(res, user, req.body.deviceId, req.headers["user-agent"]);
       return;
     }
 
@@ -218,7 +245,7 @@ router.post("/2fa/verify-login", [
     remainingCodes.splice(codeIndex, 1);
     await prisma.user.update({ where: { id: user.id }, data: { twoFactorBackupCodes: remainingCodes } });
 
-    await issueLoginResponse(res, user);
+    await issueLoginResponse(res, user, req.body.deviceId, req.headers["user-agent"]);
   } catch (err) { next(err); }
 });
 

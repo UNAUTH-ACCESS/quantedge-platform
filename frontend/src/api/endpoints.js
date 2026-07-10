@@ -1,14 +1,14 @@
 import client from "./client";
 
 export const auth = {
-  login:   (email, password) => client.post("/auth/login", { email, password }),
+  login:   (email, password, deviceId) => client.post("/auth/login", { email, password, deviceId }),
   refresh: (refreshToken)    => client.post("/auth/refresh", { refreshToken }),
   logout:  (refreshToken)    => client.post("/auth/logout", { refreshToken }),
   register: (email, password, name, workspaceName) =>
     client.post("/auth/register", { email, password, name, workspaceName }),
   verifyEmail: (token) => client.post("/auth/verify-email", { token }),
   resendVerification: () => client.post("/auth/resend-verification"),
-  verify2FALogin: (pendingToken, code) => client.post("/auth/2fa/verify-login", { pendingToken, code }),
+  verify2FALogin: (pendingToken, code, deviceId) => client.post("/auth/2fa/verify-login", { pendingToken, code, deviceId }),
   setup2FA: () => client.post("/auth/2fa/setup"),
   enable2FA: (code) => client.post("/auth/2fa/enable", { code }),
   disable2FA: (code) => client.post("/auth/2fa/disable", { code }),

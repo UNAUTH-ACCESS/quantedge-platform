@@ -272,9 +272,23 @@ model User {
   refreshTokens          RefreshToken[]
   notificationPreferences NotificationPreference[]
   pushSubscriptions      PushSubscription[]
+  knownDevices           KnownDevice[]
 
   @@index([email])
   @@map("users")
+}
+
+model KnownDevice {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deviceId    String   // client-generated UUID, persisted in localStorage
+  userAgent   String?
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+
+  @@unique([userId, deviceId])
+  @@map("known_devices")
 }
 
 model RefreshToken {
