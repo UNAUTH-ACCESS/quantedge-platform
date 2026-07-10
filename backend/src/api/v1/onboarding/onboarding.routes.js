@@ -5,7 +5,7 @@ const { AppError } = require("../../../middleware/error");
 
 const router = express.Router();
 
-const VALID_STAGES = [3, 4, 5, 6, 7, 8, 9];
+const VALID_STAGES = [3, 4, 5, 6, 7, 8, 9, 10];
 
 // GET /onboarding — return current onboarding state
 router.get("/", authenticate, requireWorkspace, async (req, res, next) => {
@@ -28,11 +28,11 @@ router.post("/stage/:n", authenticate, requireWorkspace, async (req, res, next) 
     if (stage > current.stage) throw new AppError(`Must complete stage ${current.stage} first`, 400, "STAGE_ORDER");
 
     const nextStage = stage + 1;
-    const complete  = stage === 9;
+    const complete  = stage === 10;
 
     const updated = {
       ...current,
-      stage:    complete ? 9 : nextStage,
+      stage:    complete ? 10 : nextStage,
       complete,
       data:     { ...current.data, [`stage${stage}`]: req.body },
     };
@@ -53,6 +53,32 @@ router.post("/stage/:n", authenticate, requireWorkspace, async (req, res, next) 
           },
         });
       }
+    }
+
+    // Stage 10 — final legal agreement (e-signature). Record a durable,
+    // independent audit trail: typed name, agreement version, IP, timestamp.
+    // This is the record that matters if the in-app settings blob is ever
+    // edited/reset — the audit log is the actual evidence of consent.
+    if (stage === 10) {
+      if (!req.body.typedFullName || !req.body.agreed) {
+        throw new AppError("Signature and agreement confirmation required", 400, "VALIDATION_ERROR");
+      }
+      await prisma.auditEvent.create({
+        data: {
+          workspaceId,
+          actorId:     req.user.id,
+          entityType:  "Workspace",
+          entityId:    workspaceId,
+          action:      "E_SIGNATURE",
+          beforeState: { complete: false },
+          afterState:  {
+            typedFullName: req.body.typedFullName,
+            agreementVersion: req.body.agreementVersion || "v1",
+            agreedAt: new Date().toISOString(),
+          },
+          ipAddress:   req.ip,
+        },
+      });
     }
 
     await prisma.workspace.update({ where: { id: workspaceId }, data: { settings } });

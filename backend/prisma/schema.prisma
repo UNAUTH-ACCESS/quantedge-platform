@@ -185,6 +185,7 @@ enum AuditAction {
   INVITE
   SUSPEND
   ACTIVATE
+  E_SIGNATURE
 }
 
 enum NotificationPriority {

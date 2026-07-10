@@ -78,7 +78,7 @@ function StageHeader({ stage, title, sub }) {
   return (
     <div style={{ marginBottom: 24 }}>
       <div style={{ fontSize: 9, color: colors.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>
-        Stage {stage} of 9
+        Stage {stage} of 10
       </div>
       <h2 style={{ fontSize: 18, fontWeight: 700, color: colors.text, margin: 0, marginBottom: 6 }}>{title}</h2>
       {sub && <p style={{ fontSize: 11, color: colors.muted, margin: 0, lineHeight: 1.6 }}>{sub}</p>}
@@ -87,7 +87,7 @@ function StageHeader({ stage, title, sub }) {
 }
 
 function ProgressBar({ stage }) {
-  const pct = ((stage - 3) / 6) * 100;
+  const pct = ((stage - 3) / 7) * 100;
   return (
     <div style={{ marginBottom: 28 }}>
       <div style={{ background: colors.surface2, borderRadius: 2, height: 3 }}>
@@ -665,6 +665,68 @@ function Stage9({ onNext }) {
 
 const STAGES = [3, 4, 5, 6, 7, 8, 9];
 
+// ── Stage 10 — Final Legal Agreement (e-signature) ──────────────────────────
+// Note: the agreement text below is illustrative, not attorney-drafted —
+// replace with real Terms of Service / Risk Disclosure language reviewed by
+// counsel before onboarding real clients. The audit trail (typed name, IP,
+// timestamp, version) this stage records is real and independent of the
+// text itself.
+const AGREEMENT_VERSION = "v1";
+
+function Stage10({ onNext }) {
+  const { user } = useAuthStore();
+  const [agreed, setAgreed]     = useState(false);
+  const [typedName, setTypedName] = useState("");
+
+  const valid = agreed && typedName.trim().length > 1;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <StageHeader stage={10} title="Final Agreement" sub="Last step — review and sign to activate your account."/>
+
+      <div style={{
+        background: colors.surface2, border: `1px solid ${colors.border2}`, borderRadius: 4,
+        padding: 16, maxHeight: 260, overflowY: "auto", fontSize: 11, color: colors.muted, lineHeight: 1.7,
+      }}>
+        <p style={{ fontWeight: 700, color: colors.text, marginTop: 0 }}>Risk Disclosure &amp; Trading Agreement</p>
+        <p>
+          Trading digital assets and derivatives involves substantial risk of loss and is not
+          suitable for all investors. Past performance of any signal, strategy, or portfolio
+          is not indicative of future results. QuantEdge does not guarantee any level of
+          return and you may lose some or all of your deposited funds.
+        </p>
+        <p>
+          By signing below, you confirm that you understand these risks, that the financial
+          suitability information you provided is accurate, and that you authorize QuantEdge's
+          delegate wallet system to execute trades on your behalf up to the capital allocation
+          and risk parameters you configured in earlier steps.
+        </p>
+        <p>
+          You may revoke wallet delegate approval and disable auto-execution at any time from
+          Settings. This agreement does not constitute investment advice.
+        </p>
+      </div>
+
+      <Checkbox
+        checked={agreed}
+        onChange={setAgreed}
+        label="I have read and agree to the Risk Disclosure and Trading Agreement above."
+      />
+
+      <Field label="Type your full legal name to sign">
+        <Input value={typedName} onChange={setTypedName} placeholder={user?.name || "Full legal name"} />
+      </Field>
+
+      <PrimaryBtn
+        onClick={() => onNext({ agreed, typedFullName: typedName.trim(), agreementVersion: AGREEMENT_VERSION })}
+        disabled={!valid}
+      >
+        Sign &amp; Activate Account
+      </PrimaryBtn>
+    </div>
+  );
+}
+
 export default function OnboardingPage() {
   const [stage, setStage]       = useState(3);
   const [stageData, setStageData] = useState({});
@@ -688,12 +750,12 @@ export default function OnboardingPage() {
     try {
       await onboardingApi.saveStage(n, data);
       setStageData(prev => ({ ...prev, [`stage${n}`]: data }));
-      if (n === 9) {
+      if (n === 10) {
         // Update local workspace settings so RouteGuard unblocks
         if (activeWorkspace) {
           setWorkspace({
             ...activeWorkspace,
-            settings: { ...(activeWorkspace.settings || {}), onboarding: { complete: true, stage: 9, data: {} } },
+            settings: { ...(activeWorkspace.settings || {}), onboarding: { complete: true, stage: 10, data: {} } },
           });
         }
         navigate("/dashboard", { replace: true });
@@ -736,6 +798,7 @@ export default function OnboardingPage() {
       {stage === 7 && <Stage7 {...stageProps}/>}
       {stage === 8 && <Stage8 {...stageProps}/>}
       {stage === 9 && <Stage9 {...stageProps}/>}
+      {stage === 10 && <Stage10 {...stageProps}/>}
     </div>
   );
 }
