@@ -262,6 +262,7 @@ model User {
   twoFactorSecret             String?
   twoFactorEnabled            Boolean   @default(false)
   twoFactorBackupCodes        String[]  @default([])
+  kycStatus                   KycStatus @default(NOT_SUBMITTED)
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
@@ -274,6 +275,7 @@ model User {
   notificationPreferences NotificationPreference[]
   pushSubscriptions      PushSubscription[]
   knownDevices           KnownDevice[]
+  kycSubmission          KycSubmission?
 
   @@index([email])
   @@map("users")
@@ -924,3 +926,49 @@ model PushSubscription {
   @@index([userId])
   @@map("push_subscriptions")
 }
+// Append to schema.prisma, then run:
+//   npx prisma migrate dev --name add_kyc_submissions
+
+model KycSubmission {
+  id                  String    @id @default(cuid())
+  userId              String    @unique
+  user                User      @relation(fields: [userId], references: [id])
+
+  legalName           String
+  dateOfBirth         DateTime
+  countryResidence    String
+  countryCitizenship  String
+  address             String
+
+  idType              String    // "passport" | "national_id" | "drivers_license"
+  idNumberEncrypted   String    // JSON string from kycCrypto.encryptField()
+  idDocFrontPath      String    // filename from kycCrypto.encryptFileToDisk()
+  idDocBackPath       String?
+  selfiePath          String
+
+  attestNotPep        Boolean
+  attestNoSanctions   Boolean
+  attestAccurate      Boolean
+
+  status              KycStatus @default(PENDING_REVIEW)
+  submittedAt         DateTime  @default(now())
+  reviewedAt          DateTime?
+  reviewedBy          String?   // admin User.id
+  reviewNotes         String?
+
+  createdAt           DateTime  @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([status])
+}
+
+enum KycStatus {
+  NOT_SUBMITTED
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+}
+
+// Add to the User model:
+//   kycSubmission KycSubmission?
+//   kycStatus     KycStatus @default(NOT_SUBMITTED)   // denormalized for fast gate checks

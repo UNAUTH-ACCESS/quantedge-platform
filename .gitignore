@@ -13,3 +13,4 @@ nginx/certbot/
 nginx/certbot/
 *.bak
 *.swp
+backend/storage/kyc-docs/
