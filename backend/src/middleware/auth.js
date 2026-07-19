@@ -114,4 +114,27 @@ async function requirePlatformAdmin(req, res, next) {
   }
 }
 
-module.exports = { authenticate, requireWorkspace, requirePermission, requirePlatformAdmin };
+// Blocks any fund-exposing action (wallet linking, trade signing) until a
+// human admin has approved the user's KYC submission. Does its own fetch
+// rather than widening authenticate()'s select, to avoid touching a shared
+// hot path for a feature-specific field.
+async function requireKycApproved(req, res, next) {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { kycStatus: true },
+    });
+    if (user.kycStatus !== "APPROVED") {
+      throw new AppError(
+        "KYC approval required before this action",
+        403,
+        "KYC_NOT_APPROVED"
+      );
+    }
+    next();
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { authenticate, requireWorkspace, requirePermission, requirePlatformAdmin, requireKycApproved };

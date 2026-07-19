@@ -1,6 +1,6 @@
 const express = require("express");
 const prisma = require("../../../lib/prisma");
-const { authenticate, requireWorkspace } = require("../../../middleware/auth");
+const { authenticate, requireWorkspace, requireKycApproved } = require("../../../middleware/auth");
 const { assertProposalAccess } = require("../../../middleware/ownership");
 const { AppError } = require("../../../middleware/error");
 const executionService = require("../../../services/execution.service");
@@ -66,7 +66,7 @@ router.get("/:id", authenticate, async (req, res, next) => {
 });
 
 // POST /proposals/:id/sign — user approves execution
-router.post("/:id/sign", authenticate, async (req, res, next) => {
+router.post("/:id/sign", authenticate, requireKycApproved, async (req, res, next) => {
   try {
     // CRITICAL: permission checked against THIS proposal's real workspace,
     // not a client-supplied header. Previously any user with execute_trades

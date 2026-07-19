@@ -186,6 +186,7 @@ enum AuditAction {
   SUSPEND
   ACTIVATE
   E_SIGNATURE
+  VIEW
 }
 
 enum NotificationPriority {

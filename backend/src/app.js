@@ -1,4 +1,15 @@
 require("dotenv").config();
+
+// Express's res.json() (JSON.stringify) cannot serialize a raw BigInt.
+// Transaction.blockNumber/gasUsed are BigInt in the schema and now hold
+// real values now that on-chain execution is live, which was crashing
+// GET /proposals with "Do not know how to serialize a BigInt". Global,
+// one-time fix rather than patching every route that might include a
+// Transaction relation - the safe general answer to this class of bug.
+BigInt.prototype.toJSON = function () {
+  return this.toString();
+};
+
 const http = require("http");
 const express = require("express");
 const cors = require("cors");
@@ -34,6 +45,14 @@ const kycRoutes             = require("./api/v1/kyc/kyc.routes");
 const { runWeeklySummaries } = require("./services/lifecycle.service");
 
 const app = express();
+
+// Trust exactly one proxy hop (nginx, same docker-compose network) so
+// req.ip reflects the real client IP from X-Forwarded-For, which nginx
+// already sets correctly. Without this, req.ip was always nginx's internal
+// address - meaning every AuditEvent.ipAddress written so far (proposal
+// signs, KYC review actions) recorded the wrong IP, and any IP-based rate
+// limiting would bucket all users together under one address.
+app.set("trust proxy", 1);
 const server = http.createServer(app);
 
 // ── Middleware ────────────────────────────────────────────────────────────────

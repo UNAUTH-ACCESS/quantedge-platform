@@ -21,6 +21,7 @@ const prisma = require("../../../lib/prisma");
 const { authenticate, requireWorkspace, requirePlatformAdmin } = require("../../../middleware/auth");
 const { AppError } = require("../../../middleware/error");
 const { encryptField, decryptField, encryptFileToDisk, decryptFileFromDisk } = require("../../../lib/kycCrypto");
+const { kycSubmitLimiter } = require("../../../middleware/rateLimit");
 
 // In-memory upload, 8MB cap per file, images/pdf only
 const upload = multer({
@@ -42,6 +43,7 @@ router.post(
   "/submit",
   authenticate,
   requireWorkspace,
+  kycSubmitLimiter,
   upload.fields([
     { name: "idDocFront", maxCount: 1 },
     { name: "idDocBack", maxCount: 1 },
@@ -58,6 +60,9 @@ router.post(
       if (existing) {
         throw new AppError(`KYC already submitted (status: ${existing.status})`, 409, "KYC_ALREADY_SUBMITTED");
       }
+      // Note: findUnique-then-create still has a race window between two
+      // concurrent submits; the catch block below handles the resulting
+      // P2002 from @unique(userId) as a clean 409 rather than a raw 500.
 
       const {
         legalName, dateOfBirth, countryResidence, countryCitizenship, address,
@@ -81,30 +86,35 @@ router.post(
         : null;
       const selfiePath = encryptFileToDisk(req.files.selfie[0].buffer, req.user.id, "selfie");
 
-      const submission = await prisma.kycSubmission.create({
-        data: {
-          userId: req.user.id,
-          legalName,
-          dateOfBirth: new Date(dateOfBirth),
-          countryResidence,
-          countryCitizenship,
-          address,
-          idType,
-          idNumberEncrypted: encryptField(idNumber),
-          idDocFrontPath,
-          idDocBackPath,
-          selfiePath,
-          attestNotPep: true,
-          attestNoSanctions: true,
-          attestAccurate: true,
-          status: "PENDING_REVIEW",
-        },
+      const submission = await prisma.$transaction(async (tx) => {
+        const created = await tx.kycSubmission.create({
+          data: {
+            userId: req.user.id,
+            legalName,
+            dateOfBirth: new Date(dateOfBirth),
+            countryResidence,
+            countryCitizenship,
+            address,
+            idType,
+            idNumberEncrypted: encryptField(idNumber),
+            idDocFrontPath,
+            idDocBackPath,
+            selfiePath,
+            attestNotPep: true,
+            attestNoSanctions: true,
+            attestAccurate: true,
+            status: "PENDING_REVIEW",
+          },
+        });
+        await tx.user.update({ where: { id: req.user.id }, data: { kycStatus: "PENDING_REVIEW" } });
+        return created;
       });
-
-      await prisma.user.update({ where: { id: req.user.id }, data: { kycStatus: "PENDING_REVIEW" } });
 
       return res.json({ success: true, status: submission.status, submittedAt: submission.submittedAt });
     } catch (err) {
+      if (err.code === "P2002") {
+        return next(new AppError("KYC already submitted", 409, "KYC_ALREADY_SUBMITTED"));
+      }
       next(err);
     }
   }
@@ -158,6 +168,25 @@ router.get("/admin/:id", authenticate, requirePlatformAdmin, async (req, res, ne
       : null;
     const selfie = decryptFileFromDisk(submission.selfiePath).toString("base64");
 
+    const ownerMembership = await prisma.membership.findFirst({
+      where: { userId: submission.userId, status: "ACTIVE" },
+    });
+    if (ownerMembership) {
+      await prisma.auditEvent.create({
+        data: {
+          workspaceId: ownerMembership.workspaceId,
+          actorId: req.user.id,
+          entityType: "KycSubmission",
+          entityId: submission.id,
+          action: "VIEW",
+          afterState: { viewedBy: req.user.id },
+          ipAddress: req.ip,
+        },
+      }).catch((err) => {
+        console.error("KYC audit log (VIEW) failed:", err);
+      });
+    }
+
     return res.json({
       success: true,
       submission: { ...submission, idNumberEncrypted: undefined, idNumber },
@@ -176,17 +205,49 @@ router.post("/admin/:id/review", authenticate, requirePlatformAdmin, async (req,
       throw new AppError("decision must be APPROVED or REJECTED", 400, "VALIDATION_ERROR");
     }
 
-    const submission = await prisma.kycSubmission.update({
-      where: { id: req.params.id },
-      data: {
-        status: decision,
-        reviewedAt: new Date(),
-        reviewedBy: req.user.id, // admin performing the review
-        reviewNotes: notes || null,
-      },
+    const existing = await prisma.kycSubmission.findUnique({ where: { id: req.params.id } });
+    if (!existing) throw new AppError("Submission not found", 404, "NOT_FOUND");
+    if (existing.status !== "PENDING_REVIEW") {
+      throw new AppError(
+        `Submission already decided (status: ${existing.status}) - not re-reviewable`,
+        409,
+        "ALREADY_REVIEWED"
+      );
+    }
+
+    const submission = await prisma.$transaction(async (tx) => {
+      const updated = await tx.kycSubmission.update({
+        where: { id: req.params.id },
+        data: {
+          status: decision,
+          reviewedAt: new Date(),
+          reviewedBy: req.user.id, // admin performing the review
+          reviewNotes: notes || null,
+        },
+      });
+      await tx.user.update({ where: { id: updated.userId }, data: { kycStatus: decision } });
+      return updated;
     });
 
-    await prisma.user.update({ where: { id: submission.userId }, data: { kycStatus: decision } });
+    const ownerMembership = await prisma.membership.findFirst({
+      where: { userId: submission.userId, status: "ACTIVE" },
+    });
+    if (ownerMembership) {
+      await prisma.auditEvent.create({
+        data: {
+          workspaceId: ownerMembership.workspaceId,
+          actorId: req.user.id,
+          entityType: "KycSubmission",
+          entityId: submission.id,
+          action: decision === "APPROVED" ? "APPROVE" : "REJECT",
+          beforeState: { status: "PENDING_REVIEW" },
+          afterState: { status: decision, notes: notes || null },
+          ipAddress: req.ip,
+        },
+      }).catch((err) => {
+        console.error("KYC audit log (review) failed:", err);
+      });
+    }
 
     // TODO: trigger notification email to user on decision (reuse existing Resend setup)
 

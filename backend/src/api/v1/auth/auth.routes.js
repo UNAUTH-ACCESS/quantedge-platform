@@ -1,5 +1,6 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
+const { loginLimiter, twoFactorLimiter } = require("../../../middleware/rateLimit");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const { generateSecret, generate, verify, generateURI } = require("otplib");
@@ -178,7 +179,7 @@ router.post("/register", [
 });
 
 // POST /auth/login
-router.post("/login", [
+router.post("/login", loginLimiter, [
   body("email").isEmail().normalizeEmail(),
   body("password").notEmpty(),
 ], async (req, res, next) => {
@@ -203,7 +204,7 @@ router.post("/login", [
 });
 
 // POST /auth/2fa/verify-login — second step of login when 2FA is enabled
-router.post("/2fa/verify-login", [
+router.post("/2fa/verify-login", twoFactorLimiter, [
   body("pendingToken").isString().isLength({ min: 1 }),
   body("code").isString().isLength({ min: 6, max: 10 }),
 ], async (req, res, next) => {
