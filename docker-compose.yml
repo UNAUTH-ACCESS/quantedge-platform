@@ -47,6 +47,12 @@ services:
       VAPID_SUBJECT: ${VAPID_SUBJECT}
       DELEGATE_ADDRESS: ${DELEGATE_ADDRESS}
       TRON_DELEGATE_ADDRESS: ${TRON_DELEGATE_ADDRESS}
+    volumes:
+      # Without this, storage/kyc-docs/ only exists inside the container's
+      # ephemeral filesystem - every recreate (deploy, rebuild) silently
+      # wipes any uploaded KYC documents. Bind-mounted to the host so it
+      # survives container recreation and can actually be backed up.
+      - ./backend/storage/kyc-docs:/app/storage/kyc-docs
     networks:
       - internal
 
