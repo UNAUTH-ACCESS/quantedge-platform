@@ -14,3 +14,4 @@ nginx/certbot/
 *.bak
 *.swp
 backend/storage/kyc-docs/
+backend/prisma/migrations_broken_backup/

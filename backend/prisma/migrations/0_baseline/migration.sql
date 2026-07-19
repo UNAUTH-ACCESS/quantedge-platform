@@ -17,13 +17,13 @@ CREATE TYPE "MembershipStatus" AS ENUM ('ACTIVE', 'INVITED', 'SUSPENDED');
 CREATE TYPE "RoleName" AS ENUM ('PLATFORM_ADMIN', 'ACCOUNT_ADMIN', 'TRADER', 'VIEWER');
 
 -- CreateEnum
-CREATE TYPE "ChainType" AS ENUM ('SOLANA', 'EVM');
+CREATE TYPE "ChainType" AS ENUM ('SOLANA', 'EVM', 'TRON');
 
 -- CreateEnum
 CREATE TYPE "VenueType" AS ENUM ('PERP', 'SPOT', 'AGGREGATOR');
 
 -- CreateEnum
-CREATE TYPE "WalletProvider" AS ENUM ('TRUST_WALLET', 'PHANTOM', 'METAMASK', 'OTHER');
+CREATE TYPE "WalletProvider" AS ENUM ('TRUST_WALLET', 'PHANTOM', 'METAMASK', 'TRONLINK', 'OTHER');
 
 -- CreateEnum
 CREATE TYPE "WalletStatus" AS ENUM ('CONNECTED', 'DISCONNECTED');
@@ -65,13 +65,31 @@ CREATE TYPE "PositionSide" AS ENUM ('LONG', 'SHORT', 'SPOT');
 CREATE TYPE "PositionStatus" AS ENUM ('OPEN', 'CLOSED', 'LIQUIDATED');
 
 -- CreateEnum
+CREATE TYPE "SettlementStatus" AS ENUM ('NOT_APPLICABLE', 'SETTLEMENT_PENDING', 'SETTLED', 'SETTLEMENT_FAILED');
+
+-- CreateEnum
 CREATE TYPE "RiskEventType" AS ENUM ('DRAWDOWN_BREACH', 'POSITION_LIMIT', 'STRESS_CAP', 'STOP_LOSS', 'LIQUIDATION');
 
 -- CreateEnum
-CREATE TYPE "AuditAction" AS ENUM ('CREATE', 'UPDATE', 'DELETE', 'LOGIN', 'LOGOUT', 'SIGN', 'CANCEL', 'APPROVE', 'REJECT', 'INVITE', 'SUSPEND', 'ACTIVATE');
+CREATE TYPE "AuditAction" AS ENUM ('CREATE', 'UPDATE', 'DELETE', 'LOGIN', 'LOGOUT', 'SIGN', 'CANCEL', 'APPROVE', 'REJECT', 'INVITE', 'SUSPEND', 'ACTIVATE', 'E_SIGNATURE', 'VIEW');
+
+-- CreateEnum
+CREATE TYPE "NotificationPriority" AS ENUM ('CRITICAL', 'HIGH', 'MEDIUM', 'LOW');
+
+-- CreateEnum
+CREATE TYPE "DeliveryChannel" AS ENUM ('INAPP', 'WEBPUSH', 'EMAIL', 'WEBSOCKET');
+
+-- CreateEnum
+CREATE TYPE "DeliveryStatus" AS ENUM ('PENDING', 'DELIVERED', 'FAILED');
 
 -- CreateEnum
 CREATE TYPE "NotificationType" AS ENUM ('SIGNAL', 'REGIME', 'RISK', 'SYSTEM', 'TRADE');
+
+-- CreateEnum
+CREATE TYPE "SubscriberStatus" AS ENUM ('SUBSCRIBED', 'UNSUBSCRIBED');
+
+-- CreateEnum
+CREATE TYPE "KycStatus" AS ENUM ('NOT_SUBMITTED', 'PENDING_REVIEW', 'APPROVED', 'REJECTED');
 
 -- CreateTable
 CREATE TABLE "platform_admins" (
@@ -105,10 +123,29 @@ CREATE TABLE "users" (
     "name" TEXT NOT NULL,
     "avatar" TEXT,
     "status" "UserStatus" NOT NULL DEFAULT 'ACTIVE',
+    "emailVerified" BOOLEAN NOT NULL DEFAULT false,
+    "emailVerificationToken" TEXT,
+    "emailVerificationExpiresAt" TIMESTAMP(3),
+    "twoFactorSecret" TEXT,
+    "twoFactorEnabled" BOOLEAN NOT NULL DEFAULT false,
+    "twoFactorBackupCodes" TEXT[] DEFAULT ARRAY[]::TEXT[],
+    "kycStatus" "KycStatus" NOT NULL DEFAULT 'NOT_SUBMITTED',
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "users_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "known_devices" (
+    "id" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "deviceId" TEXT NOT NULL,
+    "userAgent" TEXT,
+    "firstSeenAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "lastSeenAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "known_devices_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -221,6 +258,26 @@ CREATE TABLE "venues" (
 );
 
 -- CreateTable
+CREATE TABLE "deposits" (
+    "id" TEXT NOT NULL,
+    "workspaceId" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "walletId" TEXT NOT NULL,
+    "chain" TEXT NOT NULL DEFAULT 'SPL',
+    "depositTxHash" TEXT,
+    "depositAmount" DOUBLE PRECISION NOT NULL,
+    "vaultAddress" TEXT NOT NULL,
+    "sweepTxHash" TEXT,
+    "status" TEXT NOT NULL DEFAULT 'DETECTED',
+    "allocations" JSONB,
+    "errorMessage" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "completedAt" TIMESTAMP(3),
+
+    CONSTRAINT "deposits_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "wallets" (
     "id" TEXT NOT NULL,
     "workspaceId" TEXT NOT NULL,
@@ -233,6 +290,13 @@ CREATE TABLE "wallets" (
     "verifiedAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
+    "delegateApproved" BOOLEAN NOT NULL DEFAULT false,
+    "approvedCap" DOUBLE PRECISION,
+    "remainingAllowance" DOUBLE PRECISION,
+    "linkTxHash" TEXT,
+    "tokenAccountAddress" TEXT,
+    "delegateChain" TEXT,
+    "lastCheckedAt" TIMESTAMP(3),
 
     CONSTRAINT "wallets_pkey" PRIMARY KEY ("id")
 );
@@ -360,6 +424,7 @@ CREATE TABLE "signals" (
     "status" "SignalStatus" NOT NULL DEFAULT 'PENDING',
     "expiresAt" TIMESTAMP(3) NOT NULL,
     "generatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "barCloseAt" TIMESTAMP(3),
 
     CONSTRAINT "signals_pkey" PRIMARY KEY ("id")
 );
@@ -449,6 +514,11 @@ CREATE TABLE "positions" (
     "realizedPnl" DOUBLE PRECISION NOT NULL DEFAULT 0,
     "unrealizedPnl" DOUBLE PRECISION NOT NULL DEFAULT 0,
     "status" "PositionStatus" NOT NULL DEFAULT 'OPEN',
+    "settlementStatus" "SettlementStatus" NOT NULL DEFAULT 'NOT_APPLICABLE',
+    "settlementAttempts" INTEGER NOT NULL DEFAULT 0,
+    "settlementTxHash" TEXT,
+    "settlementError" TEXT,
+    "lastSettlementAt" TIMESTAMP(3),
     "openedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "closedAt" TIMESTAMP(3),
 
@@ -467,6 +537,21 @@ CREATE TABLE "risk_events" (
     "triggeredAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "risk_events_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "subscribers" (
+    "id" TEXT NOT NULL,
+    "email" TEXT NOT NULL,
+    "name" TEXT,
+    "source" TEXT NOT NULL DEFAULT 'website',
+    "status" "SubscriberStatus" NOT NULL DEFAULT 'SUBSCRIBED',
+    "unsubscribeToken" TEXT NOT NULL,
+    "subscribedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "unsubscribedAt" TIMESTAMP(3),
+    "metadata" JSONB NOT NULL DEFAULT '{}',
+
+    CONSTRAINT "subscribers_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -491,13 +576,89 @@ CREATE TABLE "notifications" (
     "workspaceId" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
     "type" "NotificationType" NOT NULL,
+    "priority" "NotificationPriority" NOT NULL DEFAULT 'MEDIUM',
     "title" TEXT NOT NULL,
     "body" TEXT NOT NULL,
+    "entityId" TEXT,
+    "entityType" TEXT,
     "read" BOOLEAN NOT NULL DEFAULT false,
     "deliveredAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "notifications_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "notification_deliveries" (
+    "id" TEXT NOT NULL,
+    "notificationId" TEXT NOT NULL,
+    "channel" "DeliveryChannel" NOT NULL,
+    "status" "DeliveryStatus" NOT NULL DEFAULT 'PENDING',
+    "attempts" INTEGER NOT NULL DEFAULT 0,
+    "nextRetryAt" TIMESTAMP(3),
+    "lastError" TEXT,
+    "deliveredAt" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "notification_deliveries_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "notification_preferences" (
+    "id" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "workspaceId" TEXT NOT NULL,
+    "channel" "DeliveryChannel" NOT NULL,
+    "eventType" TEXT NOT NULL DEFAULT 'ALL',
+    "enabled" BOOLEAN NOT NULL DEFAULT true,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "notification_preferences_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "push_subscriptions" (
+    "id" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "workspaceId" TEXT NOT NULL,
+    "endpoint" TEXT NOT NULL,
+    "p256dh" TEXT NOT NULL,
+    "auth" TEXT NOT NULL,
+    "userAgent" TEXT,
+    "active" BOOLEAN NOT NULL DEFAULT true,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "push_subscriptions_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "KycSubmission" (
+    "id" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "legalName" TEXT NOT NULL,
+    "dateOfBirth" TIMESTAMP(3) NOT NULL,
+    "countryResidence" TEXT NOT NULL,
+    "countryCitizenship" TEXT NOT NULL,
+    "address" TEXT NOT NULL,
+    "idType" TEXT NOT NULL,
+    "idNumberEncrypted" TEXT NOT NULL,
+    "idDocFrontPath" TEXT NOT NULL,
+    "idDocBackPath" TEXT,
+    "selfiePath" TEXT NOT NULL,
+    "attestNotPep" BOOLEAN NOT NULL,
+    "attestNoSanctions" BOOLEAN NOT NULL,
+    "attestAccurate" BOOLEAN NOT NULL,
+    "status" "KycStatus" NOT NULL DEFAULT 'PENDING_REVIEW',
+    "submittedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "reviewedAt" TIMESTAMP(3),
+    "reviewedBy" TEXT,
+    "reviewNotes" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "KycSubmission_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateIndex
@@ -513,7 +674,13 @@ CREATE INDEX "platform_audit_events_ts_idx" ON "platform_audit_events"("ts");
 CREATE UNIQUE INDEX "users_email_key" ON "users"("email");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "users_emailVerificationToken_key" ON "users"("emailVerificationToken");
+
+-- CreateIndex
 CREATE INDEX "users_email_idx" ON "users"("email");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "known_devices_userId_deviceId_key" ON "known_devices"("userId", "deviceId");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "refresh_tokens_token_key" ON "refresh_tokens"("token");
@@ -555,7 +722,19 @@ CREATE UNIQUE INDEX "chains_name_key" ON "chains"("name");
 CREATE UNIQUE INDEX "venues_name_key" ON "venues"("name");
 
 -- CreateIndex
+CREATE INDEX "deposits_workspaceId_idx" ON "deposits"("workspaceId");
+
+-- CreateIndex
+CREATE INDEX "deposits_walletId_idx" ON "deposits"("walletId");
+
+-- CreateIndex
+CREATE INDEX "deposits_status_idx" ON "deposits"("status");
+
+-- CreateIndex
 CREATE INDEX "wallets_workspaceId_idx" ON "wallets"("workspaceId");
+
+-- CreateIndex
+CREATE INDEX "wallets_delegateApproved_idx" ON "wallets"("delegateApproved");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "wallets_workspaceId_address_chainId_key" ON "wallets"("workspaceId", "address", "chainId");
@@ -583,6 +762,9 @@ CREATE INDEX "signals_signalConfigId_generatedAt_idx" ON "signals"("signalConfig
 
 -- CreateIndex
 CREATE INDEX "signals_status_expiresAt_idx" ON "signals"("status", "expiresAt");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "signals_signalConfigId_barCloseAt_key" ON "signals"("signalConfigId", "barCloseAt");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "portfolio_signal_evaluations_tradeProposalId_key" ON "portfolio_signal_evaluations"("tradeProposalId");
@@ -621,6 +803,18 @@ CREATE INDEX "positions_portfolioId_status_idx" ON "positions"("portfolioId", "s
 CREATE INDEX "risk_events_portfolioId_triggeredAt_idx" ON "risk_events"("portfolioId", "triggeredAt");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "subscribers_email_key" ON "subscribers"("email");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "subscribers_unsubscribeToken_key" ON "subscribers"("unsubscribeToken");
+
+-- CreateIndex
+CREATE INDEX "subscribers_status_idx" ON "subscribers"("status");
+
+-- CreateIndex
+CREATE INDEX "subscribers_email_idx" ON "subscribers"("email");
+
+-- CreateIndex
 CREATE INDEX "audit_events_workspaceId_ts_idx" ON "audit_events"("workspaceId", "ts");
 
 -- CreateIndex
@@ -632,8 +826,38 @@ CREATE INDEX "notifications_userId_read_idx" ON "notifications"("userId", "read"
 -- CreateIndex
 CREATE INDEX "notifications_workspaceId_createdAt_idx" ON "notifications"("workspaceId", "createdAt");
 
+-- CreateIndex
+CREATE INDEX "notifications_userId_type_idx" ON "notifications"("userId", "type");
+
+-- CreateIndex
+CREATE INDEX "notification_deliveries_status_nextRetryAt_idx" ON "notification_deliveries"("status", "nextRetryAt");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "notification_deliveries_notificationId_channel_key" ON "notification_deliveries"("notificationId", "channel");
+
+-- CreateIndex
+CREATE INDEX "notification_preferences_userId_workspaceId_idx" ON "notification_preferences"("userId", "workspaceId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "notification_preferences_userId_workspaceId_channel_eventTy_key" ON "notification_preferences"("userId", "workspaceId", "channel", "eventType");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "push_subscriptions_endpoint_key" ON "push_subscriptions"("endpoint");
+
+-- CreateIndex
+CREATE INDEX "push_subscriptions_userId_idx" ON "push_subscriptions"("userId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "KycSubmission_userId_key" ON "KycSubmission"("userId");
+
+-- CreateIndex
+CREATE INDEX "KycSubmission_status_idx" ON "KycSubmission"("status");
+
 -- AddForeignKey
 ALTER TABLE "platform_admins" ADD CONSTRAINT "platform_admins_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "known_devices" ADD CONSTRAINT "known_devices_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "refresh_tokens" ADD CONSTRAINT "refresh_tokens_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -655,6 +879,12 @@ ALTER TABLE "subscriptions" ADD CONSTRAINT "subscriptions_workspaceId_fkey" FORE
 
 -- AddForeignKey
 ALTER TABLE "venues" ADD CONSTRAINT "venues_chainId_fkey" FOREIGN KEY ("chainId") REFERENCES "chains"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "deposits" ADD CONSTRAINT "deposits_workspaceId_fkey" FOREIGN KEY ("workspaceId") REFERENCES "workspaces"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "deposits" ADD CONSTRAINT "deposits_walletId_fkey" FOREIGN KEY ("walletId") REFERENCES "wallets"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "wallets" ADD CONSTRAINT "wallets_workspaceId_fkey" FOREIGN KEY ("workspaceId") REFERENCES "workspaces"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -760,3 +990,22 @@ ALTER TABLE "notifications" ADD CONSTRAINT "notifications_workspaceId_fkey" FORE
 
 -- AddForeignKey
 ALTER TABLE "notifications" ADD CONSTRAINT "notifications_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "notification_deliveries" ADD CONSTRAINT "notification_deliveries_notificationId_fkey" FOREIGN KEY ("notificationId") REFERENCES "notifications"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "notification_preferences" ADD CONSTRAINT "notification_preferences_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "notification_preferences" ADD CONSTRAINT "notification_preferences_workspaceId_fkey" FOREIGN KEY ("workspaceId") REFERENCES "workspaces"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "push_subscriptions" ADD CONSTRAINT "push_subscriptions_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "push_subscriptions" ADD CONSTRAINT "push_subscriptions_workspaceId_fkey" FOREIGN KEY ("workspaceId") REFERENCES "workspaces"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "KycSubmission" ADD CONSTRAINT "KycSubmission_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
