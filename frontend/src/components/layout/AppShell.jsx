@@ -19,6 +19,10 @@ const NAV = [
   { to: "/pnl",       label: "P&L",         icon: "◈" },
 ];
 
+const ADMIN_NAV = [
+  { to: "/admin/kyc",  label: "KYC Review",  icon: "☑" },
+];
+
 function RegimeOrb({ regime }) {
   if (!regime) return (
     <div style={{ padding: "10px 16px" }}>
@@ -113,7 +117,7 @@ function Sidebar({ onNav }) {
 
       {/* Nav */}
       <nav style={{ flex: 1, padding: "4px 0", overflowY: "auto" }}>
-        {NAV.map(({ to, label, icon }) => (
+        {[...NAV, ...(user?.isPlatformAdmin ? ADMIN_NAV : [])].map(({ to, label, icon }) => (
           <NavLink key={to} to={to} onClick={onNav} style={({ isActive }) => ({
             display: "flex", alignItems: "center", gap: 10,
             padding: "9px 16px",

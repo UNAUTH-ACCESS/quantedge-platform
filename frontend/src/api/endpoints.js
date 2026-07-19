@@ -97,3 +97,17 @@ export const audit = {
   notifications: (params) => client.get("/audit/notifications", { params }),
   markRead:      (id)     => client.patch(`/audit/notifications/${id}/read`),
 };
+
+export const kyc = {
+  // User-facing
+  status: () => client.get("/kyc/status"),
+  submit: (formData) => client.post("/kyc/submit", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  }),
+
+  // Admin-only (backend enforces requirePlatformAdmin regardless of what the
+  // client sends — this is UI convenience, not the security boundary)
+  adminPending: () => client.get("/kyc/admin/pending"),
+  adminGet:     (id) => client.get(`/kyc/admin/${id}`),
+  adminReview:  (id, decision, notes) => client.post(`/kyc/admin/${id}/review`, { decision, notes }),
+};

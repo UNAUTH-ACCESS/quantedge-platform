@@ -68,6 +68,8 @@ async function issueLoginResponse(res, user, deviceId, userAgent) {
     include: { workspace: true, role: true },
   });
 
+  const platformAdmin = await prisma.platformAdmin.findUnique({ where: { userId: user.id } });
+
   const { access, refresh } = generateTokens(user.id);
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
   await prisma.refreshToken.create({ data: { userId: user.id, token: refresh, expiresAt } });
@@ -76,7 +78,7 @@ async function issueLoginResponse(res, user, deviceId, userAgent) {
     success: true,
     data: {
       accessToken: access, refreshToken: refresh,
-      user: { id: user.id, email: user.email, name: user.name, emailVerified: user.emailVerified, twoFactorEnabled: user.twoFactorEnabled },
+      user: { id: user.id, email: user.email, name: user.name, emailVerified: user.emailVerified, twoFactorEnabled: user.twoFactorEnabled, kycStatus: user.kycStatus, isPlatformAdmin: !!platformAdmin },
       workspaces: memberships.map(m => ({ id: m.workspace.id, name: m.workspace.name, slug: m.workspace.slug, role: m.role.name, settings: m.workspace.settings })),
     },
   });
@@ -350,6 +352,8 @@ router.get("/me", authenticate, async (req, res, next) => {
     const user = await prisma.user.findUnique({ where: { id: req.user.id } });
     if (!user) throw new AppError("User not found", 404, "NOT_FOUND");
 
+    const platformAdmin = await prisma.platformAdmin.findUnique({ where: { userId: user.id } });
+
     const memberships = await prisma.membership.findMany({
       where: { userId: user.id, status: "ACTIVE" },
       include: { workspace: true, role: true },
@@ -358,7 +362,7 @@ router.get("/me", authenticate, async (req, res, next) => {
     res.json({
       success: true,
       data: {
-        user: { id: user.id, email: user.email, name: user.name, emailVerified: user.emailVerified, twoFactorEnabled: user.twoFactorEnabled },
+        user: { id: user.id, email: user.email, name: user.name, emailVerified: user.emailVerified, twoFactorEnabled: user.twoFactorEnabled, kycStatus: user.kycStatus, isPlatformAdmin: !!platformAdmin },
         workspaces: memberships.map(m => ({ id: m.workspace.id, name: m.workspace.name, slug: m.workspace.slug, role: m.role.name, settings: m.workspace.settings })),
       },
     });
