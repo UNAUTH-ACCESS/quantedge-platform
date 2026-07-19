@@ -1,15 +1,17 @@
 import axios from "axios";
+import { getAccessToken, setAccessToken, clearAccessToken } from "../lib/tokenHolder";
 
 // All requests go through same origin — no hardcoded URLs
 const client = axios.create({
   baseURL: "/api/v1",
   timeout: 15000,
   headers: { "Content-Type": "application/json" },
+  withCredentials: true, // required to send/receive the httpOnly refresh cookie
 });
 
 // ── Request interceptor — inject auth + workspace headers ──────────────────
 client.interceptors.request.use((config) => {
-  const token = localStorage.getItem("qe_access_token");
+  const token = getAccessToken();
   const workspaceId = localStorage.getItem("qe_workspace_id");
   if (token) config.headers.Authorization = `Bearer ${token}`;
   if (workspaceId) config.headers["x-workspace-id"] = workspaceId;
@@ -25,7 +27,9 @@ client.interceptors.response.use(
   async (err) => {
     const original = err.config;
 
-    // Token expired — attempt refresh once
+    // Token expired — attempt refresh once. No refresh token is ever read
+    // here; it lives in an httpOnly cookie sent automatically by the browser
+    // via withCredentials, and the server rotates + re-sets it on success.
     if (err.response?.status === 401 && !original._retry) {
       if (refreshing) {
         // Queue requests that arrive while refresh is in progress
@@ -38,14 +42,10 @@ client.interceptors.response.use(
       refreshing = true;
 
       try {
-        const refreshToken = localStorage.getItem("qe_refresh_token");
-        if (!refreshToken) throw new Error("No refresh token");
+        const { data } = await axios.post("/api/v1/auth/refresh", {}, { withCredentials: true });
+        const { accessToken } = data.data;
 
-        const { data } = await axios.post("/api/v1/auth/refresh", { refreshToken });
-        const { accessToken, refreshToken: newRefresh } = data.data;
-
-        localStorage.setItem("qe_access_token", accessToken);
-        localStorage.setItem("qe_refresh_token", newRefresh);
+        setAccessToken(accessToken);
 
         refreshQueue.forEach(({ resolve }) => resolve());
         refreshQueue = [];
@@ -56,7 +56,9 @@ client.interceptors.response.use(
         // Refresh failed — clear session, redirect to login
         refreshQueue.forEach(({ reject }) => reject());
         refreshQueue = [];
-        localStorage.clear();
+        clearAccessToken();
+        localStorage.removeItem("qe_user_id");
+        localStorage.removeItem("qe_workspace_id");
         window.location.href = "/login";
         return Promise.reject(normalizeError(err));
       } finally {

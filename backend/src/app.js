@@ -14,6 +14,7 @@ const http = require("http");
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
+const cookieParser = require("cookie-parser");
 const morgan = require("morgan");
 
 // Validates all shared/critical config at boot — fails fast with a clear,
@@ -58,6 +59,7 @@ const server = http.createServer(app);
 // ── Middleware ────────────────────────────────────────────────────────────────
 app.use(helmet());
 app.use(cors({ origin: process.env.CORS_ORIGIN || "http://localhost:5173", credentials: true }));
+app.use(cookieParser());
 app.use(express.json());
 app.use(morgan("combined", { stream: { write: (msg) => logger.info(msg.trim()) } }));
 

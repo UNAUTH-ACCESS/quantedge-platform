@@ -75,10 +75,12 @@ async function issueLoginResponse(res, user, deviceId, userAgent) {
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
   await prisma.refreshToken.create({ data: { userId: user.id, token: refresh, expiresAt } });
 
+  setRefreshCookie(res, refresh);
+
   res.json({
     success: true,
     data: {
-      accessToken: access, refreshToken: refresh,
+      accessToken: access,
       user: { id: user.id, email: user.email, name: user.name, emailVerified: user.emailVerified, twoFactorEnabled: user.twoFactorEnabled, kycStatus: user.kycStatus, isPlatformAdmin: !!platformAdmin },
       workspaces: memberships.map(m => ({ id: m.workspace.id, name: m.workspace.name, slug: m.workspace.slug, role: m.role.name, settings: m.workspace.settings })),
     },
@@ -95,6 +97,25 @@ function generateTokens(userId) {
     expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || "7d",
   });
   return { access, refresh };
+}
+
+// Refresh token now lives ONLY in an httpOnly cookie - never in a JSON body,
+// never touchable by JS, so an XSS payload can no longer exfiltrate it.
+// scoped to /api/v1/auth so it isn't sent on every single API request.
+const REFRESH_COOKIE_NAME = "qe_refresh_token";
+const REFRESH_COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: true,      // requires HTTPS; correctly detected behind nginx because
+                      // app.set("trust proxy", 1) + nginx's X-Forwarded-Proto
+  sameSite: "strict", // frontend + API are same-origin through nginx
+  path: "/api/v1/auth",
+  maxAge: 7 * 24 * 60 * 60 * 1000,
+};
+function setRefreshCookie(res, token) {
+  res.cookie(REFRESH_COOKIE_NAME, token, REFRESH_COOKIE_OPTIONS);
+}
+function clearRefreshCookie(res) {
+  res.clearCookie(REFRESH_COOKIE_NAME, { path: "/api/v1/auth" });
 }
 
 // POST /auth/register
@@ -327,19 +348,29 @@ router.post("/2fa/disable", authenticate, [
 // POST /auth/refresh
 router.post("/refresh", async (req, res, next) => {
   try {
-    const { refreshToken } = req.body;
+    const refreshToken = req.cookies?.[REFRESH_COOKIE_NAME];
     if (!refreshToken) throw new AppError("Refresh token required", 400, "BAD_REQUEST");
 
-    const payload = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+    let payload;
+    try {
+      payload = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+    } catch {
+      clearRefreshCookie(res);
+      throw new AppError("Refresh token invalid or expired", 401, "UNAUTHORIZED");
+    }
     const stored = await prisma.refreshToken.findUnique({ where: { token: refreshToken } });
-    if (!stored || stored.expiresAt < new Date()) throw new AppError("Refresh token expired", 401, "UNAUTHORIZED");
+    if (!stored || stored.expiresAt < new Date()) {
+      clearRefreshCookie(res);
+      throw new AppError("Refresh token expired", 401, "UNAUTHORIZED");
+    }
 
     await prisma.refreshToken.delete({ where: { token: refreshToken } });
     const { access, refresh } = generateTokens(payload.sub);
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     await prisma.refreshToken.create({ data: { userId: payload.sub, token: refresh, expiresAt } });
 
-    res.json({ success: true, data: { accessToken: access, refreshToken: refresh } });
+    setRefreshCookie(res, refresh);
+    res.json({ success: true, data: { accessToken: access } });
   } catch (err) { next(err); }
 });
 
@@ -373,8 +404,9 @@ router.get("/me", authenticate, async (req, res, next) => {
 // POST /auth/logout
 router.post("/logout", authenticate, async (req, res, next) => {
   try {
-    const { refreshToken } = req.body;
+    const refreshToken = req.cookies?.[REFRESH_COOKIE_NAME];
     if (refreshToken) await prisma.refreshToken.deleteMany({ where: { token: refreshToken } });
+    clearRefreshCookie(res);
     res.json({ success: true });
   } catch (err) { next(err); }
 });

@@ -2,8 +2,8 @@ import client from "./client";
 
 export const auth = {
   login:   (email, password, deviceId) => client.post("/auth/login", { email, password, deviceId }),
-  refresh: (refreshToken)    => client.post("/auth/refresh", { refreshToken }),
-  logout:  (refreshToken)    => client.post("/auth/logout", { refreshToken }),
+  refresh: () => client.post("/auth/refresh"),
+  logout:  () => client.post("/auth/logout"),
   register: (email, password, name, workspaceName) =>
     client.post("/auth/register", { email, password, name, workspaceName }),
   verifyEmail: (token) => client.post("/auth/verify-email", { token }),
