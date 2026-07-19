@@ -101,11 +101,24 @@ const STATUSES = {
 
 // ── WalletCard ────────────────────────────────────────────────────────────────
 
-function WalletCard({ chain, workspaceId, onLinked }) {
+function WalletCard({ chain, workspaceId, onLinked, approvedWallet }) {
   const [status,  setStatus]  = useState("idle");
   const [error,   setError]   = useState(null);
   const [address, setAddress] = useState(null);
   const [txHash,  setTxHash]  = useState(null);
+
+  // Hydrate from server truth. Without this, the card starts at "idle" on
+  // every mount regardless of what's actually delegate-approved on-chain -
+  // which is exactly the desync where already-linked wallets showed as
+  // "Not connected". Only overrides idle/error states, never an in-flight
+  // connect attempt.
+  useEffect(() => {
+    if (approvedWallet && (status === "idle" || status === "error")) {
+      setStatus("linked");
+      setAddress(approvedWallet.address);
+      if (approvedWallet.linkTxHash) setTxHash(approvedWallet.linkTxHash);
+    }
+  }, [approvedWallet]);
 
   const s = STATUSES[status];
   const isLinked = status === "linked";
@@ -346,6 +359,32 @@ function WalletCard({ chain, workspaceId, onLinked }) {
 export default function WalletConnect() {
   const workspaceId = useAuthStore(s => s.activeWorkspace?.id);
   const [linked, setLinked] = useState({});
+  const [approvedByChain, setApprovedByChain] = useState({});
+
+  // Fetch what's ACTUALLY delegate-approved server-side, once per mount.
+  // delegate-status returns only wallets with delegateApproved=true, each
+  // carrying its delegateChain (SPL/TRC20/ERC20) - exactly the key the
+  // CHAINS config uses.
+  useEffect(() => {
+    if (!workspaceId) return;
+    client.get("/wallets/delegate-status")
+      .then(res => {
+        const byChain = {};
+        for (const w of res.data.data || []) {
+          if (w.delegateChain) byChain[w.delegateChain] = w;
+        }
+        setApprovedByChain(byChain);
+        // Seed the summary count from server truth too
+        setLinked(prev => {
+          const next = { ...prev };
+          for (const [chainKey, w] of Object.entries(byChain)) {
+            if (!next[chainKey]) next[chainKey] = { address: w.address, txHash: w.linkTxHash };
+          }
+          return next;
+        });
+      })
+      .catch(() => {}); // non-fatal: cards just start at idle as before
+  }, [workspaceId]);
 
   function handleLinked({ chain, address, txHash }) {
     setLinked(prev => ({ ...prev, [chain]: { address, txHash } }));
@@ -390,6 +429,7 @@ export default function WalletConnect() {
             chain={chain}
             workspaceId={workspaceId}
             onLinked={handleLinked}
+            approvedWallet={approvedByChain[chain.key] || null}
           />
         ))}
       </div>
