@@ -751,6 +751,17 @@ model Fill {
   feeAsset        String    @default("USDT")
   filledAt        DateTime  @default(now())
 
+  // Fill provenance — makes the simulated fill fully reproducible and lets us
+  // prove whether it was derived from a real market snapshot or fell back to
+  // the proposal estimate. sourceSnapshotTs is the timestamp of the exact
+  // buffered snapshot used (next-at-or-after the signal); fillMethod records
+  // how the price was derived; wasLive=false means no snapshot existed and we
+  // fell back to estEntry/currentPrice, which must never be mistaken for a
+  // real-market fill.
+  sourceSnapshotTs DateTime?
+  fillMethod       String?   // "next_after_signal" | "estimate_fallback" | "synthetic"
+  wasLive          Boolean   @default(false)
+
   position Position?
 
   @@map("fills")

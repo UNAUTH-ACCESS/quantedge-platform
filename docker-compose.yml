@@ -86,6 +86,14 @@ services:
       SOLANA_DELEGATE_ADDRESS: ${SOLANA_DELEGATE_ADDRESS}
       DELEGATE_ADDRESS: ${DELEGATE_ADDRESS}
       TRON_DELEGATE_ADDRESS: ${TRON_DELEGATE_ADDRESS}
+      # Test fixture only - see src/lib/syntheticOutcome.js. Defaults to
+      # false so a normal deploy never silently runs synthetic outcomes.
+      SIM_SYNTHETIC_OUTCOME: ${SIM_SYNTHETIC_OUTCOME:-false}
+      SIM_SYNTHETIC_WIN_RATE: ${SIM_SYNTHETIC_WIN_RATE:-0.40}
+      SIM_SYNTHETIC_WIN_MIN_PCT: ${SIM_SYNTHETIC_WIN_MIN_PCT:-0.02}
+      SIM_SYNTHETIC_WIN_MAX_PCT: ${SIM_SYNTHETIC_WIN_MAX_PCT:-0.06}
+      SIM_SYNTHETIC_LOSS_MIN_PCT: ${SIM_SYNTHETIC_LOSS_MIN_PCT:-0.01}
+      SIM_SYNTHETIC_LOSS_MAX_PCT: ${SIM_SYNTHETIC_LOSS_MAX_PCT:-0.03}
     networks:
       - internal
 

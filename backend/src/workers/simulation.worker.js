@@ -21,6 +21,8 @@ const RollingWindowState        = require("./feeds/rolling.window");
 const { computeFeatures }       = require("./feeds/features");
 const { computeAndWriteRegime } = require("./regime.job");
 const { updatePositionPrices, snapshotPortfolio } = require("../services/position.service");
+const { MarketSnapshotBuffer } = require("../lib/marketSnapshotBuffer");
+const { setSnapshotBuffer } = require("../lib/fillDerivation");
 const { recordRiskEvent }       = require("../services/risk.service");
 const { evaluateSignal }        = require("../services/evaluation.service");
 const { closePosition }         = require("../services/exit.service");
@@ -39,7 +41,18 @@ const DEPOSIT_INTERVAL  = parseInt(process.env.DEPOSIT_INTERVAL_MS || "60000");
 const POSITION_TTL_MS   = parseInt(process.env.POSITION_TTL_MS || "14400000");
 
 const rollingWindow = new RollingWindowState();
-const mockPrices    = { SOL: 142.30, BTC: 67240.00, ETH: 3482.10 };
+
+// No hardcoded seed prices. Before the first real kline arrives for a
+// symbol, livePrices simply has no entry for it - updatePositionPrices()
+// already does "if (!newPrice) continue", so an unset price means that
+// asset is honestly skipped rather than marked against a fake constant.
+const livePrices = {};
+
+// 90-second rolling buffer of real timestamped snapshots per asset, used to
+// deterministically derive fills at signal time (next-at-or-after model).
+// In-memory only - see design discussion, this is intentional.
+const snapshotBuffer = new MarketSnapshotBuffer();
+setSnapshotBuffer(snapshotBuffer);
 
 // Track last known signal direction per asset for reversal detection
 const lastSignalDirection = {};
@@ -49,11 +62,13 @@ const feed = new BybitFeed(
   (symbol, interval, bar) => {
     if (symbol === "BTCUSDT" && interval === "30") {
       rollingWindow.onBtcKline(bar);
-      mockPrices.BTC = bar.close;
+      livePrices.BTC = bar.close;
+      snapshotBuffer.record("BTC", bar.close);
     }
     if (symbol === "SOLUSDT" && interval === "5") {
       rollingWindow.onSolKline(bar);
-      mockPrices.SOL = bar.close;
+      livePrices.SOL = bar.close;
+      snapshotBuffer.record("SOL", bar.close);
     }
   },
   (symbol, data) => {
@@ -186,7 +201,7 @@ async function generateSignal() {
 // ── Market feed loop ──────────────────────────────────────────────────────────
 async function marketFeedLoop() {
   try {
-    await updatePositionPrices(mockPrices);
+    await updatePositionPrices(livePrices);
 
     const openPositions = await prisma.position.findMany({
       where: { status: "OPEN" },

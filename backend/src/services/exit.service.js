@@ -20,6 +20,8 @@
 const { Client } = require("pg");
 const prisma          = require("../lib/prisma");
 const logger          = require("../lib/logger");
+const { deriveFillPrice } = require("../lib/fillDerivation");
+const { isSyntheticOutcomeEnabled, generateSyntheticExit } = require("../lib/syntheticOutcome");
 const { snapshotPortfolio } = require("./position.service");
 const { notify } = require("../notifications/router");
 const { settlePosition } = require("./execution.service");
@@ -163,10 +165,43 @@ async function closePosition(positionId, reason = "MANUAL") {
     // Simulate execution delay
     await delay(randomDelay());
 
-    // Compute exit price with realistic slippage
-    const slippage  = getSlippage(isStress);
-    const exitPrice = position.currentPrice * (1 + slippage);
-    const feePaid   = proposal.notional * (proposal.estFeeBps / 10000);
+    // Exit price: two mutually exclusive paths.
+    //
+    // 1. SIM_SYNTHETIC_OUTCOME=true - test fixture. Exit price is drawn from
+    //    a known 40% win-rate, asymmetric, positive-EV distribution against
+    //    the position's REAL entry price. Validates the metrics pipeline
+    //    against numbers with a known expected shape. Never mistaken for a
+    //    real fill: fillMethod="synthetic", wasLive=false.
+    //
+    // 2. Default - derived from the market snapshot buffer (worker process)
+    //    at-or-after this close proposal's proposedAt, falling back to
+    //    position.currentPrice (itself already live-derived via the feed)
+    //    if no buffer is injected (API process) or no snapshot exists yet.
+    let exitPrice, sourceSnapshotTs, fillMethod, wasLive, syntheticIsWin, syntheticMovePct;
+
+    if (isSyntheticOutcomeEnabled()) {
+      const synthetic = generateSyntheticExit(position.entryPrice, position.side);
+      exitPrice = synthetic.exitPrice;
+      syntheticIsWin = synthetic.isWin;
+      syntheticMovePct = synthetic.movePct;
+      sourceSnapshotTs = null;
+      fillMethod = "synthetic";
+      wasLive = false;
+    } else {
+      ({ fillPrice: exitPrice, sourceSnapshotTs, fillMethod, wasLive } = deriveFillPrice(
+        position.asset?.symbol,
+        proposal.proposedAt,
+        position.currentPrice
+      ));
+    }
+
+    const feePaid = proposal.notional * (proposal.estFeeBps / 10000);
+
+    logger.info("[exit.service] Fill derived", {
+      positionId, symbol: position.asset?.symbol, exitPrice, fillMethod, wasLive,
+      signalTs: proposal.proposedAt, sourceSnapshotTs,
+      ...(fillMethod === "synthetic" ? { syntheticIsWin, syntheticMovePct } : {}),
+    });
     const txHash    = generateMockTxHash(position.chain?.type || "SOLANA");
 
     // Compute realized P&L
@@ -202,6 +237,9 @@ async function closePosition(positionId, reason = "MANUAL") {
         feePaid,
         feeAsset:        "USDT",
         filledAt:        new Date(),
+        sourceSnapshotTs,
+        fillMethod,
+        wasLive,
       },
     });
 

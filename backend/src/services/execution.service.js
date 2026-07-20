@@ -1,5 +1,6 @@
 const { v4: uuidv4 } = require("uuid");
 const prisma = require("../lib/prisma");
+const { deriveFillPrice } = require("../lib/fillDerivation");
 const positionService = require("./position.service");
 const logger = require("../lib/logger");
 const { notify } = require("../notifications/router");
@@ -55,7 +56,7 @@ async function signAndExecute(proposalId) {
     include: {
       wallet: { include: { chain: true } },
       venue:  true,
-
+      asset:  true,
     },
   });
 
@@ -147,9 +148,18 @@ async function signAndExecute(proposalId) {
   // Step 3: CONFIRMED — simulate confirmation delay
   await delay(useDelegateExecution ? 1000 : 3000);
 
-  const fillPrice = proposal.estEntry * (1 + (Math.random() * 0.002 - 0.001)); // ±0.1% slippage
+  const { fillPrice, sourceSnapshotTs, fillMethod, wasLive } = deriveFillPrice(
+    proposal.asset?.symbol,
+    proposal.proposedAt,
+    proposal.estEntry
+  );
   const fillSize  = proposal.notional / fillPrice;
   const feePaid   = proposal.notional * (proposal.estFeeBps / 10000);
+
+  logger.info("[execution] Fill derived", {
+    proposalId, symbol: proposal.asset?.symbol, fillPrice, fillMethod, wasLive,
+    signalTs: proposal.proposedAt, sourceSnapshotTs,
+  });
 
   // Record fill
   const fill = await prisma.fill.create({
@@ -163,6 +173,9 @@ async function signAndExecute(proposalId) {
       feePaid,
       feeAsset:        "USDT",
       filledAt:        new Date(),
+      sourceSnapshotTs,
+      fillMethod,
+      wasLive,
     },
   });
 
