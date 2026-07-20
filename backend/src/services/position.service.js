@@ -90,6 +90,21 @@ function calculateUnrealizedPnl(side, size, entryPrice, currentPrice) {
   return (currentPrice - entryPrice) * size;
 }
 
+// Real starting cash for a portfolio's FIRST-EVER snapshot: sum of
+// completed deposits into the portfolio's workspace. Deposit has no
+// portfolioId (only workspaceId) - its "allocations" field is a per-chain
+// split of where the minted USDT landed, not a per-portfolio split - so
+// workspace-level completed deposits is the correct real signal here.
+// Returns 0 (not a placeholder) if no deposits have completed yet, which is
+// the honest state while chains are still on devnet/testnet.
+async function getWorkspaceStartingCash(workspaceId) {
+  const result = await prisma.deposit.aggregate({
+    where: { workspaceId, status: "COMPLETE" },
+    _sum: { depositAmount: true },
+  });
+  return result._sum.depositAmount || 0;
+}
+
 // Update portfolio snapshot with current NAV
 async function snapshotPortfolio(portfolioId) {
   const positions = await prisma.position.findMany({
@@ -105,7 +120,22 @@ async function snapshotPortfolio(portfolioId) {
   });
 
   const realizedPnl = lastSnapshot?.realizedPnl || 0;
-  const nav = (lastSnapshot?.cash || 70500) + unrealizedPnl + realizedPnl;
+
+  let startingCash;
+  if (lastSnapshot) {
+    startingCash = lastSnapshot.cash;
+  } else {
+    // First snapshot ever for this portfolio - no more silent 70500
+    // placeholder. Real starting cash, or honestly 0 if nothing has
+    // actually been deposited yet.
+    const portfolio = await prisma.portfolio.findUnique({
+      where: { id: portfolioId },
+      select: { workspaceId: true },
+    });
+    startingCash = portfolio ? await getWorkspaceStartingCash(portfolio.workspaceId) : 0;
+  }
+
+  const nav = startingCash + unrealizedPnl + realizedPnl;
 
   return prisma.portfolioSnapshot.create({
     data: { portfolioId, nav, invested, unrealizedPnl, realizedPnl, cash: nav - invested },
