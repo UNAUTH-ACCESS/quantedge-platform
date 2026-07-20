@@ -64,6 +64,14 @@ async function generateReport(portfolioId, period = "monthly") {
     ? Math.abs(avgWin * winningTrades.length) / Math.abs(avgLoss * losingTrades.length)
     : null;
 
+  // Expectancy per trade: average realized PnL across all trades. This is
+  // mathematically equivalent to (winRate * avgWin) + (lossRate * avgLoss) -
+  // every trade here is classified as either a win or a loss (realizedPnl
+  // <= 0 counts as a loss above), so the direct average and the decomposed
+  // form must agree. Using the direct form avoids any rounding drift between
+  // the two if the decomposition were computed separately.
+  const expectancyPerTrade = totalTrades > 0 ? totalPnl / totalTrades : 0;
+
   // ── Hold time ─────────────────────────────────────────────────────────────
   const holdTimes = positions
     .filter(p => p.closedAt && p.openedAt)
@@ -80,8 +88,9 @@ async function generateReport(portfolioId, period = "monthly") {
 
   const maxDrawdown = computeMaxDrawdown(navSeries);
 
-  // ── Sharpe ratio (annualized, using snapshot returns) ─────────────────────
-  const sharpe = computeSharpe(navSeries);
+  // ── Sharpe ratio and volatility (annualized, using snapshot returns) ─────
+  const sharpe     = computeSharpe(navSeries);
+  const volatility = computeVolatility(navSeries);
 
   // ── Venue breakdown ───────────────────────────────────────────────────────
   const byVenue = {};
@@ -120,6 +129,7 @@ async function generateReport(portfolioId, period = "monthly") {
       avgWin:         round(avgWin, 2),
       avgLoss:        round(avgLoss, 2),
       profitFactor:   profitFactor ? round(profitFactor, 3) : null,
+      expectancyPerTrade: round(expectancyPerTrade, 2),
       avgHoldTimeMin: round(avgHoldTimeMin, 1),
     },
 
@@ -129,6 +139,10 @@ async function generateReport(portfolioId, period = "monthly") {
       returnPct:   round(navReturn, 2),
       maxDrawdown: round(maxDrawdown, 2),
       sharpe:      round(sharpe, 3),
+      // Annualized volatility (std dev of periodic returns). Shares the same
+      // periodsPerYear assumption as Sharpe below - only correct if snapshot
+      // cadence really matches that assumption.
+      volatility:  round(volatility, 4),
     },
 
     bestTrade: bestTrade ? {
@@ -171,18 +185,41 @@ function computeMaxDrawdown(navSeries) {
   return maxDD;
 }
 
-function computeSharpe(navSeries, periodsPerYear = 17520) {
-  if (navSeries.length < 3) return 0;
+// Shared by computeSharpe and computeVolatility so both operate on
+// identical return data rather than two copies of the same loop drifting
+// apart over time.
+function computeReturns(navSeries) {
   const returns = [];
   for (let i = 1; i < navSeries.length; i++) {
     if (navSeries[i - 1] > 0) {
       returns.push((navSeries[i] - navSeries[i - 1]) / navSeries[i - 1]);
     }
   }
+  return returns;
+}
+
+function computeSharpe(navSeries, periodsPerYear = 17520) {
+  if (navSeries.length < 3) return 0;
+  const returns = computeReturns(navSeries);
   if (returns.length < 2) return 0;
   const mean = returns.reduce((s, r) => s + r, 0) / returns.length;
   const std  = Math.sqrt(returns.reduce((s, r) => s + (r - mean) ** 2, 0) / returns.length);
   return std > 0 ? (mean / std) * Math.sqrt(periodsPerYear) : 0;
+}
+
+// Annualized volatility: std dev of periodic returns scaled by sqrt(periods
+// per year) - the standard annualization used for Sharpe's denominator too.
+// NOTE: periodsPerYear=17520 assumes a snapshot every 30 minutes
+// (2 * 24 * 365 = 17520). If SNAPSHOT_INTERVAL_MS changes, this assumption
+// silently becomes wrong for both this and Sharpe above - not fixed here,
+// flagged for a future pass.
+function computeVolatility(navSeries, periodsPerYear = 17520) {
+  if (navSeries.length < 3) return 0;
+  const returns = computeReturns(navSeries);
+  if (returns.length < 2) return 0;
+  const mean = returns.reduce((s, r) => s + r, 0) / returns.length;
+  const std  = Math.sqrt(returns.reduce((s, r) => s + (r - mean) ** 2, 0) / returns.length);
+  return std * Math.sqrt(periodsPerYear);
 }
 
 function getPeriodRange(period) {
@@ -203,4 +240,4 @@ function round(n, d) {
   return Math.round(n * 10 ** d) / 10 ** d;
 }
 
-module.exports = { generateReport };
+module.exports = { generateReport, computeMaxDrawdown, computeSharpe, computeVolatility, computeReturns, round };
