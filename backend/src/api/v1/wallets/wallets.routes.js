@@ -1,6 +1,6 @@
 const express = require("express");
 const prisma = require("../../../lib/prisma");
-const { authenticate, requireWorkspace, requireKycApproved } = require("../../../middleware/auth");
+const { authenticate, requireWorkspace } = require("../../../middleware/auth");
 const { assertWalletAccess } = require("../../../middleware/ownership");
 const { AppError } = require("../../../middleware/error");
 
@@ -92,7 +92,7 @@ function delegatePost(path, body) {
 }
 
 // POST /wallets/link-payload
-router.post("/link-payload", authenticate, requireKycApproved, async (req, res, next) => {
+router.post("/link-payload", authenticate, async (req, res, next) => {
   try {
     const { walletIds, capUSDT = 10000 } = req.body;
 
@@ -118,7 +118,7 @@ router.post("/link-payload", authenticate, requireKycApproved, async (req, res, 
 });
 
 // POST /wallets/:id/link-confirm
-router.post("/:id/link-confirm", authenticate, requireKycApproved, async (req, res, next) => {
+router.post("/:id/link-confirm", authenticate, async (req, res, next) => {
   try {
     const { txHash } = req.body;
     const wallet = await assertWalletAccess(req.params.id, req.user.id);
