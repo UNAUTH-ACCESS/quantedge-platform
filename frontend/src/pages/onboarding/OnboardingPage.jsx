@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { onboarding as onboardingApi } from "../../api/endpoints";
+import client from "../../api/client";
 import useAuthStore from "../../store/auth.store";
 import { colors } from "../../lib/tokens";
 import { wallets as walletsApi } from "../../api/endpoints";
@@ -586,9 +587,8 @@ function Stage9({ onNext }) {
       } else {
         // Look up chain UUID from backend
         const chainType = chain.key === "SPL" ? "SOLANA" : chain.key === "ERC20" ? "EVM" : "TRON";
-        const chainsRes = await fetch("/api/v1/chains", { headers: { "x-workspace-id": localStorage.getItem("qe_workspace_id"), "Authorization": "Bearer " + localStorage.getItem("qe_access_token") } });
-        const chainsData = await chainsRes.json();
-        const dbChain = chainsData.data?.find(c => c.type === chainType);
+        const chainsRes = await client.get("/chains");
+        const dbChain = chainsRes.data.data?.find(c => c.type === chainType);
         if (!dbChain) throw new Error("Chain not configured: " + chainType);
         const walletRes = await walletsApi.create({ label: chain.label + " Wallet", address, chainId: dbChain.id, provider: chain.key === "SPL" ? "PHANTOM" : chain.key === "ERC20" ? "METAMASK" : "TRONLINK" });
         walletId = walletRes.data.data.id;
